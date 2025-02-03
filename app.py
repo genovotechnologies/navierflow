@@ -44,9 +44,9 @@ class FluidSimulationOpenGL:
             'grayscale': self._create_grayscale_gradient
         }
 
-        # LBM specific variables
+        # LBM specific variables with arbitrary precision integers
         self.e = np.array([[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
-                           [1, 1], [-1, 1], [-1, -1], [1, -1]], dtype=np.int8)
+                           [1, 1], [-1, 1], [-1, -1], [1, -1]], dtype=object)
         self.w = np.array([4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 / 36],
                           dtype=np.float32)
 
@@ -516,7 +516,7 @@ class FluidSimulationOpenGL:
         return feq
 
     def _lbm_step(self):
-        """Perform one step of the LBM simulation"""
+        """Perform one step of the LBM simulation with improved streaming"""
         # Initialize if needed
         self._initialize_lbm()
 
@@ -540,11 +540,17 @@ class FluidSimulationOpenGL:
         omega = self.params.omega
         self.f = self.f * (1.0 - omega) + feq * omega
 
-        # Streaming step
+        # Improved streaming step
+        f_temp = self.f.copy()
         for i in range(9):
-            self.f[:, :, i] = np.roll(np.roll(self.f[:, :, i],
-                                              self.e[i, 0], axis=0),
-                                      self.e[i, 1], axis=1)
+            # Use numpy roll with explicit axis specification and int32 to handle larger grid sizes
+            if self.e[i, 0] != 0:
+                f_temp[:, :, i] = np.roll(f_temp[:, :, i], shift=np.int32(self.e[i, 0]), axis=0)
+            if self.e[i, 1] != 0:
+                f_temp[:, :, i] = np.roll(f_temp[:, :, i], shift=np.int32(self.e[i, 1]), axis=1)
+
+        # Update f
+        self.f = f_temp
 
         # Bounce-back on walls
         self._apply_boundary_conditions()
@@ -554,19 +560,25 @@ class FluidSimulationOpenGL:
         # Bounce-back on walls (assuming index pairs for opposite directions)
         opposite = [0, 3, 4, 1, 2, 7, 8, 5, 6]  # Opposite direction indices
 
+        # Temporary copy for modifications
+        f_boundary = self.f.copy()
+
         # Top and bottom walls
         for i in range(9):
             # Bottom wall
-            self.f[0, :, i] = self.f[0, :, opposite[i]]
+            f_boundary[0, :, i] = self.f[0, :, opposite[i]]
             # Top wall
-            self.f[-1, :, i] = self.f[-1, :, opposite[i]]
+            f_boundary[-1, :, i] = self.f[-1, :, opposite[i]]
 
         # Left and right walls
         for i in range(9):
             # Left wall
-            self.f[:, 0, i] = self.f[:, 0, opposite[i]]
+            f_boundary[:, 0, i] = self.f[:, 0, opposite[i]]
             # Right wall
-            self.f[:, -1, i] = self.f[:, -1, opposite[i]]
+            f_boundary[:, -1, i] = self.f[:, -1, opposite[i]]
+
+        # Update the original distribution function
+        self.f = f_boundary
 
     def render(self):
         """Enhanced rendering with statistics overlay"""
