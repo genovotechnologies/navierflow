@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import colorsys
 import time
 
-
 @dataclass
 class SimulationParams:
     dt: float = 0.1
@@ -16,25 +15,22 @@ class SimulationParams:
     density_multiplier: float = 5.0
     velocity_multiplier: float = 2.0
     diffusion_rate: float = 0.05
-    color_mode: str = 'blue'  # Added color mode parameter
-    brush_size: int = 3  # Added brush size parameter
-    vorticity: float = 0.1  # Added vorticity strength
-    temperature: float = 0.0  # Added temperature effect
+    color_mode: str = 'blue'
+    brush_size: int = 3
+    vorticity: float = 0.1
+    temperature: float = 0.0
 
 class FluidSimulationOpenGL:
     def __init__(self, nx: int = 128, ny: int = 128, method: str = 'eulerian'):
-        self.nx, self.ny = nx, ny
-        self.method = method
-        self.velocity = np.zeros((nx, ny, 2), dtype=np.float32)
-        self.density = np.zeros((nx, ny), dtype=np.float32)
-        self.temperature = np.zeros((nx, ny), dtype=np.float32)  # Added temperature field
-        self.vorticity = np.zeros((nx, ny), dtype=np.float32)  # Added vorticity field
+        # Initialize simulation parameters first
         self.params = SimulationParams()
 
-        # Performance tracking
-        self.frame_times: List[float] = []
-        self.last_frame_time = time.time()
-        self.fps = 0.0
+        # Set grid dimensions
+        self.nx, self.ny = nx, ny
+        self.method = method
+
+        # Initialize fps attribute
+        self.fps = 0.0  # Add this line
 
         # Multiple color schemes
         self.color_schemes = {
@@ -43,6 +39,17 @@ class FluidSimulationOpenGL:
             'rainbow': self._create_rainbow_gradient,
             'grayscale': self._create_grayscale_gradient
         }
+
+        # Initialize fields
+        self.velocity = np.zeros((nx, ny, 2), dtype=np.float32)
+        self.density = np.zeros((nx, ny), dtype=np.float32)
+        self.temperature = np.zeros((nx, ny), dtype=np.float32)
+        self.vorticity = np.zeros((nx, ny), dtype=np.float32)
+
+        # Performance tracking
+        self.frame_times: List[float] = []
+        self.last_frame_time = time.time()
+        self.fps = 0.0
 
         # LBM specific variables with arbitrary precision integers
         self.e = np.array([[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
@@ -55,6 +62,8 @@ class FluidSimulationOpenGL:
         self.mouse_down = False
         self.mouse_pos = (0, 0)
         self.last_mouse_pos = (0, 0)
+
+        # Call this method to set up color gradient
         self._setup_color_gradient()
 
         # Initialize simulation stats
@@ -63,6 +72,11 @@ class FluidSimulationOpenGL:
             'total_density': 0.0,
             'avg_temperature': 0.0
         }
+
+        # Initialize particle (ball)
+        self.ball_position = np.array([nx // 2, ny // 2], dtype=np.float32)
+        self.ball_velocity = np.array([0.0, 0.0], dtype=np.float32)
+        self.ball_radius = 10
 
     def _create_blue_gradient(self):
         gradient = np.zeros((256, 3), dtype=np.float32)
@@ -289,6 +303,9 @@ class FluidSimulationOpenGL:
         # Advect density
         self.density = self._advect_scalar(self.density)
 
+        # Update ball position
+        self._update_ball()
+
     def _project(self):
         """
         Project the velocity field to be divergence-free using Helmholtz-Hodge decomposition.
@@ -461,7 +478,7 @@ class FluidSimulationOpenGL:
         print("v: Toggle vorticity confinement")
         print("Arrow keys: Adjust brush size and viscosity")
         print("h: Show this help message")
-        print(f"Current FPS: {self.fps:.1f}")
+        print(f"Current FPS: {getattr(self, 'fps', 0):.1f}")
 
     def _reset_simulation(self):
         """Reset the simulation to its initial state"""
@@ -665,6 +682,46 @@ class FluidSimulationOpenGL:
         for char in text:
             glut.glutBitmapCharacter(glut.GLUT_BITMAP_9_BY_15, ord(char))
 
+    def _update_ball(self):
+        """Update position and velocity of the ball (particle) in the simulation"""
+        # Calculate forces from the velocity field
+        ball_x, ball_y = map(int, self.ball_position)
+
+        # Ensure the ball is within the grid bounds
+        ball_x = max(0, min(ball_x, self.nx - 1))
+        ball_y = max(0, min(ball_y, self.ny - 1))
+
+        # Get local velocity
+        local_velocity = self.velocity[ball_x, ball_y]
+
+        # Update ball velocity with some damping
+        self.ball_velocity += local_velocity * 0.5
+
+        # Apply damping to prevent excessive velocity
+        damping = 0.95
+        self.ball_velocity *= damping
+
+        # Update ball position
+        self.ball_position += self.ball_velocity * self.params.dt
+
+        # Boundary conditions - bounce off walls
+        if (self.ball_position[0] < self.ball_radius or
+                self.ball_position[0] > self.nx - self.ball_radius):
+            self.ball_velocity[0] *= -1
+
+        if (self.ball_position[1] < self.ball_radius or
+                self.ball_position[1] > self.ny - self.ball_radius):
+            self.ball_velocity[1] *= -1
+
+    # Add this to the existing __init__ method in the FluidSimulationOpenGL class
+    def __init__(self, nx: int = 128, ny: int = 128, method: str = 'eulerian'):
+        # Existing initialization code...
+
+        # Ensure this is added after other initializations
+        self.ball_position = np.array([nx // 2, ny // 2], dtype=np.float32)
+        self.ball_velocity = np.array([0.0, 0.0], dtype=np.float32)
+        self.ball_radius = 10  # Consistent with existing attribute
+
     def run(self):
         """Start the enhanced simulation loop"""
         self.initialize_opengl()
@@ -692,7 +749,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     sim = FluidSimulationOpenGL(nx=args.size, ny=args.size, method=args.method)
-    sim.params.color_mode = args.color_mode
-    sim.params.viscosity = args.viscosity
-    sim.params.vorticity = args.vorticity
     sim.run()
