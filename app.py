@@ -111,6 +111,8 @@ class FluidSimulationOpenGL:
     @property
     def density(self):
         """Get the density field"""
+        if not hasattr(self, '_density'):
+            self._density = np.zeros((self.nx, self.ny), dtype=np.float32)
         return self._density
 
     @density.setter
@@ -197,7 +199,7 @@ class FluidSimulationOpenGL:
                 dx, dy = dx / distance, dy / distance
 
                 # Create brush mask
-                brush_radius = self.params.brush_size
+                brush_radius = max(1, self.params.brush_size)  # Ensure positive radius
                 y_grid, x_grid = np.ogrid[-brush_radius:brush_radius + 1, -brush_radius:brush_radius + 1]
                 mask = x_grid * x_grid + y_grid * y_grid <= brush_radius * brush_radius
 
@@ -213,29 +215,35 @@ class FluidSimulationOpenGL:
                     y_start = max(0, cy - brush_radius)
                     y_end = min(self.ny, cy + brush_radius + 1)
 
-                    # Calculate mask ranges
-                    mask_x_start = max(0, brush_radius - cx)
-                    mask_x_end = min(2 * brush_radius + 1, brush_radius + (self.nx - cx))
-                    mask_y_start = max(0, brush_radius - cy)
-                    mask_y_end = min(2 * brush_radius + 1, brush_radius + (self.ny - cy))
+                    # Calculate mask indices
+                    mask_x_start = max(0, brush_radius - (cx - x_start))
+                    mask_x_end = mask_x_start + (x_end - x_start)
+                    mask_y_start = max(0, brush_radius - (cy - y_start))
+                    mask_y_end = mask_y_start + (y_end - y_start)
 
                     # Extract relevant part of the mask
                     local_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
 
                     # Calculate intensity based on distance from center
-                    y_coords, x_coords = np.mgrid[y_start:y_end, x_start:x_end]
+                    y_coords, x_coords = np.meshgrid(
+                        np.arange(y_start, y_end),
+                        np.arange(x_start, x_end),
+                        indexing='ij'
+                    )
                     distances = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
                     intensity = np.maximum(0, 1.0 - distances / brush_radius)
 
-                    # Apply effects where mask is True
+                    # Apply density
                     self.density[y_start:y_end, x_start:x_end][local_mask] += (
                             self.params.density_multiplier * intensity[local_mask]
                     )
+
+                    # Apply temperature
                     self.temperature[y_start:y_end, x_start:x_end][local_mask] += (
                             self.params.temperature * intensity[local_mask]
                     )
 
-                    # Add velocity with falloff
+                    # Apply velocity
                     velocity_contribution = np.array([dx, dy]) * self.params.velocity_multiplier
                     self.velocity[y_start:y_end, x_start:x_end][local_mask] += (
                             velocity_contribution * intensity[local_mask, np.newaxis]
@@ -243,9 +251,6 @@ class FluidSimulationOpenGL:
 
         except Exception as e:
             print(f"Error in _add_interaction: {str(e)}")
-            # Initialize density if it doesn't exist
-            if not hasattr(self, 'density'):
-                self.density = np.zeros((self.nx, self.ny), dtype=np.float32)
 
     def _compute_vorticity(self):
         dx = np.roll(self.velocity[..., 1], -1, axis=0) - np.roll(self.velocity[..., 1], 1, axis=0)
@@ -390,26 +395,32 @@ class FluidSimulationOpenGL:
 
         glut.glutPostRedisplay()
 
-    def keyboard(self, key: bytes):
-        key = key.lower()
-        if key == b'm':
-            self.method = 'lbm' if self.method == 'eulerian' else 'eulerian'
-            print(f"Switched to {self.method} method")
-        elif key == b'r':
-            self._reset_simulation()
-        elif key == b'c':
-            modes = list(self.color_schemes.keys())
-            current_idx = modes.index(self.params.color_mode)
-            next_idx = (current_idx + 1) % len(modes)
-            self.params.color_mode = modes[next_idx]
-            self._setup_color_gradient()
-        elif key == b't':
-            self.params.temperature = 0.5 if self.params.temperature == 0 else 0
-        elif key == b'v':
-            # Toggle vorticity confinement
-            self.params.vorticity = 0.1 if self.params.vorticity == 0 else 0
-        elif key == b'h':
-            self._print_help()
+    def keyboard(self, key: bytes, x: int, y: int):
+        """Enhanced keyboard controls"""
+        try:
+            key = key.lower()
+            if key == b'm':
+                self.method = 'lbm' if self.method == 'eulerian' else 'eulerian'
+                print(f"Switched to {self.method} method")
+            elif key == b'r':
+                self._reset_simulation()
+            elif key == b'c':
+                # Cycle through color modes
+                modes = list(self.color_schemes.keys())
+                current_idx = modes.index(self.params.color_mode)
+                next_idx = (current_idx + 1) % len(modes)
+                self.params.color_mode = modes[next_idx]
+                self._setup_color_gradient()
+            elif key == b't':
+                # Toggle temperature effect
+                self.params.temperature = 0.5 if self.params.temperature == 0 else 0
+            elif key == b'v':
+                # Toggle vorticity confinement
+                self.params.vorticity = 0.1 if self.params.vorticity == 0 else 0
+            elif key == b'h':
+                self._print_help()
+        except Exception as e:
+            print(f"Error in keyboard handler: {str(e)}")
 
     def _print_help(self):
         """Display help information"""
