@@ -22,17 +22,11 @@ class SimulationParams:
 
 class FluidSimulationOpenGL:
     def __init__(self, nx: int = 128, ny: int = 128, method: str = 'eulerian'):
-        # Initialize simulation parameters first
         self.params = SimulationParams()
-
-        # Set grid dimensions
         self.nx, self.ny = nx, ny
         self.method = method
-
-        # Initialize fps attribute
         self.fps = 0.0
 
-        # Multiple color schemes
         self.color_schemes = {
             'blue': self._create_blue_gradient,
             'fire': self._create_fire_gradient,
@@ -40,63 +34,35 @@ class FluidSimulationOpenGL:
             'grayscale': self._create_grayscale_gradient
         }
 
-        # Initialize fields
         self.velocity = np.zeros((nx, ny, 2), dtype=np.float32)
         self.density = np.zeros((nx, ny), dtype=np.float32)
         self.temperature = np.zeros((nx, ny), dtype=np.float32)
         self.vorticity = np.zeros((nx, ny), dtype=np.float32)
 
-        # Initialize particle (ball)
         self.ball_position = np.array([nx // 2, ny // 2], dtype=np.float32)
         self.ball_velocity = np.array([0.0, 0.0], dtype=np.float32)
         self.ball_radius = 10
 
-        # Performance tracking
         self.frame_times = []
         self.last_frame_time = time.time()
 
-        # Initialize OpenGL-related attributes
         self.texture = None
         self.mouse_down = False
         self.mouse_pos = (0, 0)
         self.last_mouse_pos = (0, 0)
 
-        # Initialize simulation stats
         self.stats = {
             'max_velocity': 0.0,
             'total_density': 0.0,
             'avg_temperature': 0.0
         }
 
-        # Call this method to set up color gradient
         self._setup_color_gradient()
 
-        # LBM specific variables with arbitrary precision integers
         self.e = np.array([[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
                            [1, 1], [-1, 1], [-1, -1], [1, -1]], dtype=object)
         self.w = np.array([4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 / 36],
                           dtype=np.float32)
-
-        # OpenGL state
-        self.texture = None
-        self.mouse_down = False
-        self.mouse_pos = (0, 0)
-        self.last_mouse_pos = (0, 0)
-
-        # Call this method to set up color gradient
-        self._setup_color_gradient()
-
-        # Initialize simulation stats
-        self.stats = {
-            'max_velocity': 0.0,
-            'total_density': 0.0,
-            'avg_temperature': 0.0
-        }
-
-        # Initialize particle (ball)
-        self.ball_position = np.array([nx // 2, ny // 2], dtype=np.float32)
-        self.ball_velocity = np.array([0.0, 0.0], dtype=np.float32)
-        self.ball_radius = 10
 
     def _create_blue_gradient(self):
         gradient = np.zeros((256, 3), dtype=np.float32)
@@ -128,35 +94,28 @@ class FluidSimulationOpenGL:
         return gradient
 
     def _setup_color_gradient(self):
-        """Set up color gradient based on current mode"""
         self.color_gradient = self.color_schemes[self.params.color_mode]()
 
     def initialize_opengl(self):
-        """Initialize OpenGL context with improved settings"""
         glut.glutInit()
         glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGB | glut.GLUT_DEPTH)
         glut.glutInitWindowSize(800, 800)
         glut.glutCreateWindow(b"Enhanced Fluid Simulation")
 
-        # Enable blending for smooth rendering
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
 
-        # Enable texturing with improved settings
         gl.glEnable(gl.GL_TEXTURE_2D)
         self.texture = gl.glGenTextures(1)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
 
-        # Use trilinear filtering for better quality
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
 
-        # Set dark background
         gl.glClearColor(0.0, 0.0, 0.1, 1.0)
 
-        # Register enhanced callbacks
         glut.glutMouseFunc(self.mouse_button)
         glut.glutMotionFunc(self.mouse_motion)
         glut.glutKeyboardFunc(self.keyboard)
@@ -164,7 +123,6 @@ class FluidSimulationOpenGL:
         glut.glutSpecialFunc(self.special_keys)
 
     def reshape(self, width: int, height: int):
-        """Handle window resizing"""
         gl.glViewport(0, 0, width, height)
         gl.glMatrixMode(gl.GL_PROJECTION)
         gl.glLoadIdentity()
@@ -172,29 +130,20 @@ class FluidSimulationOpenGL:
         gl.glMatrixMode(gl.GL_MODELVIEW)
 
     def mouse_button(self, button: int, state: int, x: int, y: int):
-        """Handle mouse button events"""
         if button == glut.GLUT_LEFT_BUTTON:
             self.mouse_down = state == glut.GLUT_DOWN
             if self.mouse_down:
-                # Convert screen coordinates to simulation grid coordinates
-                x = int((x / 800) * self.nx)
-                y = int(((800 - y) / 800) * self.ny)
-                self.mouse_pos = (x, y)
                 self.last_mouse_pos = (x, y)
 
     def mouse_motion(self, x: int, y: int):
-        """Handle mouse motion events"""
         if self.mouse_down:
-            # Convert screen coordinates to simulation grid coordinates
             x = int((x / 800) * self.nx)
             y = int(((800 - y) / 800) * self.ny)
             self.mouse_pos = (x, y)
-            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1],
-                                self.mouse_pos[0], self.mouse_pos[1])
+            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], x, y)
             self.last_mouse_pos = self.mouse_pos
 
     def special_keys(self, key: int, x: int, y: int):
-        """Handle special keys for parameter adjustment"""
         if key == glut.GLUT_KEY_UP:
             self.params.viscosity *= 1.1
         elif key == glut.GLUT_KEY_DOWN:
@@ -205,64 +154,39 @@ class FluidSimulationOpenGL:
             self.params.brush_size = min(10, self.params.brush_size + 1)
 
     def _add_interaction(self, x1: int, y1: int, x2: int, y2: int):
-        """Enhanced interaction with brush size and temperature effects"""
         x1, y1 = int(x1), int(y1)
         x2, y2 = int(x2), int(y2)
-
-        # Calculate direction and distance
         dx, dy = x2 - x1, y2 - y1
         distance = np.sqrt(dx * dx + dy * dy)
 
         if distance > 0:
             dx, dy = dx / distance, dy / distance
-
-            # Create brush mask
             brush_radius = self.params.brush_size
             y, x = np.ogrid[-brush_radius:brush_radius + 1, -brush_radius:brush_radius + 1]
             mask = x * x + y * y <= brush_radius * brush_radius
 
-            # Apply along the path
             steps = max(int(distance), 1)
             for i in range(steps):
-                x = int(x1 + dx * i)
-                y = int(y1 + dy * i)
-
-                # Apply brush effects within bounds
-                for ox in range(-brush_radius, brush_radius + 1):
-                    for oy in range(-brush_radius, brush_radius + 1):
-                        if mask[oy + brush_radius, ox + brush_radius]:
-                            px = np.clip(x + ox, 0, self.nx - 1)
-                            py = np.clip(y + oy, 0, self.ny - 1)
-
-                            # Add density and temperature
-                            intensity = 1.0 - (ox * ox + oy * oy) / (brush_radius * brush_radius)
-                            self.density[px, py] += self.params.density_multiplier * intensity
-                            self.temperature[px, py] += self.params.temperature * intensity
-
-                            # Add velocity with falloff
-                            self.velocity[px, py] += np.array([dx, dy]) * self.params.velocity_multiplier * intensity
+                xi = int(x1 + dx * i)
+                yi = int(y1 + dy * i)
+                self.density[xi - brush_radius:xi + brush_radius + 1, yi - brush_radius:yi + brush_radius + 1][mask] += self.params.density_multiplier
 
     def _compute_vorticity(self):
-        """Compute vorticity field"""
         dx = np.roll(self.velocity[..., 1], -1, axis=0) - np.roll(self.velocity[..., 1], 1, axis=0)
         dy = np.roll(self.velocity[..., 0], -1, axis=1) - np.roll(self.velocity[..., 0], 1, axis=1)
         self.vorticity = (dx - dy) * 0.5
 
     def _apply_vorticity_confinement(self):
-        """Apply vorticity confinement force"""
         if self.params.vorticity <= 0:
             return
 
-        # Compute vorticity gradient
         dx = np.roll(self.vorticity, -1, axis=0) - np.roll(self.vorticity, 1, axis=0)
         dy = np.roll(self.vorticity, -1, axis=1) - np.roll(self.vorticity, 1, axis=1)
 
-        # Normalize gradient
         length = np.sqrt(dx * dx + dy * dy) + 1e-10
         dx /= length
         dy /= length
 
-        # Apply force
         force_x = dy * self.vorticity * self.params.vorticity
         force_y = -dx * self.vorticity * self.params.vorticity
 
@@ -270,67 +194,32 @@ class FluidSimulationOpenGL:
         self.velocity[..., 1] += force_y * self.params.dt
 
     def _diffuse(self, field: np.ndarray, diffusion_rate: float, dt: float) -> np.ndarray:
-        """
-        Solve the diffusion equation using Gauss-Seidel relaxation.
-
-        Args:
-            field: The field to diffuse (density, temperature, etc.)
-            diffusion_rate: Rate of diffusion
-            dt: Time step
-
-        Returns:
-            The diffused field
-        """
         a = dt * diffusion_rate * self.nx * self.ny
         result = field.copy()
 
-        # Gauss-Seidel relaxation
-        for k in range(20):  # Number of iterations
+        for k in range(20):
             old_field = result.copy()
-            result[1:-1, 1:-1] = (old_field[1:-1, 1:-1] +
-                                  a * (
-                                          old_field[2:, 1:-1] +  # right
-                                          old_field[:-2, 1:-1] +  # left
-                                          old_field[1:-1, 2:] +  # top
-                                          old_field[1:-1, :-2]  # bottom
-                                  )) / (1 + 4 * a)
+            result[1:-1, 1:-1] = (old_field[1:-1, 1:-1] + a * (
+                old_field[2:, 1:-1] + old_field[:-2, 1:-1] +
+                old_field[1:-1, 2:] + old_field[1:-1, :-2])) / (1 + 4 * a)
 
-            # Handle boundaries - wrap around
-            result[0, :] = result[-2, :]  # Top edge
-            result[-1, :] = result[1, :]  # Bottom edge
-            result[:, 0] = result[:, -2]  # Left edge
-            result[:, -1] = result[:, 1]  # Right edge
+            result[0, :] = result[-2, :]
+            result[-1, :] = result[1, :]
+            result[:, 0] = result[:, -2]
+            result[:, -1] = result[:, 1]
 
         return result
 
     def _eulerian_step(self):
-        """
-        Perform one step of the Eulerian fluid simulation.
-        """
-        # Diffuse velocity
         self.velocity[..., 0] = self._diffuse(self.velocity[..., 0], self.params.viscosity, self.params.dt)
         self.velocity[..., 1] = self._diffuse(self.velocity[..., 1], self.params.viscosity, self.params.dt)
-
-        # Project velocity to be divergence-free
         self._project()
-
-        # Advect velocity
         self.velocity = self._advect(self.velocity)
-
-        # Project again
         self._project()
-
-        # Advect density
         self.density = self._advect_scalar(self.density)
-
-        # Update ball position
         self._update_ball()
 
     def _project(self):
-        """
-        Project the velocity field to be divergence-free using Helmholtz-Hodge decomposition.
-        """
-        # Compute divergence
         div = np.zeros((self.nx, self.ny))
         h = 1.0 / self.nx
         div[1:-1, 1:-1] = -0.5 * h * (
@@ -338,103 +227,67 @@ class FluidSimulationOpenGL:
                 self.velocity[1:-1, 2:, 1] - self.velocity[1:-1, :-2, 1]
         )
 
-        # Solve Poisson equation
         p = np.zeros_like(div)
         for k in range(20):
-            p[1:-1, 1:-1] = (div[1:-1, 1:-1] +
-                             p[2:, 1:-1] + p[:-2, 1:-1] +
-                             p[1:-1, 2:] + p[1:-1, :-2]) / 4.0
+            p[1:-1, 1:-1] = (div[1:-1, 1:-1] + (
+                p[2:, 1:-1] + p[:-2, 1:-1] +
+                p[1:-1, 2:] + p[1:-1, :-2])) / 4
 
-            # Handle boundaries
             p[0, :] = p[-2, :]
             p[-1, :] = p[1, :]
             p[:, 0] = p[:, -2]
             p[:, -1] = p[:, 1]
 
-        # Subtract pressure gradient
         self.velocity[1:-1, 1:-1, 0] -= 0.5 * (p[2:, 1:-1] - p[:-2, 1:-1]) / h
         self.velocity[1:-1, 1:-1, 1] -= 0.5 * (p[1:-1, 2:] - p[1:-1, :-2]) / h
 
-        # Handle boundaries
         self.velocity[0, :] = self.velocity[-2, :]
         self.velocity[-1, :] = self.velocity[1, :]
         self.velocity[:, 0] = self.velocity[:, -2]
         self.velocity[:, -1] = self.velocity[:, 1]
 
     def _advect(self, field):
-        """
-        Advect a vector field using semi-Lagrangian advection.
-        """
         result = np.zeros_like(field)
-
         dt0 = self.params.dt * self.nx
         for i in range(1, self.nx - 1):
             for j in range(1, self.ny - 1):
-                # Trace particle back
                 x = i - dt0 * field[i, j, 0]
                 y = j - dt0 * field[i, j, 1]
-
-                # Clamp coordinates
-                x = max(0.5, min(self.nx - 1.5, x))
-                y = max(0.5, min(self.ny - 1.5, y))
-
-                # Get interpolation indices
-                i0, i1 = int(x), int(x) + 1
-                j0, j1 = int(y), int(y) + 1
-
-                # Get interpolation weights
-                s1 = x - i0
-                s0 = 1 - s1
-                t1 = y - j0
-                t0 = 1 - t1
-
-                # Interpolate
-                result[i, j] = (
-                        t0 * (s0 * field[i0, j0] + s1 * field[i1, j0]) +
-                        t1 * (s0 * field[i0, j1] + s1 * field[i1, j1])
-                )
-
+                if x < 0.5: x = 0.5
+                if x > self.nx - 1.5: x = self.nx - 1.5
+                if y < 0.5: y = 0.5
+                if y > self.ny - 1.5: y = self.ny - 1.5
+                i0, j0 = int(x), int(y)
+                i1, j1 = i0 + 1, j0 + 1
+                s1, t1 = x - i0, y - j0
+                s0, t0 = 1 - s1, 1 - t1
+                result[i, j] = s0 * (t0 * field[i0, j0] + t1 * field[i0, j1]) + s1 * (t0 * field[i1, j0] + t1 * field[i1, j1])
         return result
 
     def _advect_scalar(self, field):
-        """
-        Advect a scalar field using semi-Lagrangian advection.
-        """
         result = np.zeros_like(field)
-
         dt0 = self.params.dt * self.nx
         for i in range(1, self.nx - 1):
             for j in range(1, self.ny - 1):
                 x = i - dt0 * self.velocity[i, j, 0]
                 y = j - dt0 * self.velocity[i, j, 1]
-
-                x = max(0.5, min(self.nx - 1.5, x))
-                y = max(0.5, min(self.ny - 1.5, y))
-
-                i0, i1 = int(x), int(x) + 1
-                j0, j1 = int(y), int(y) + 1
-
-                s1 = x - i0
-                s0 = 1 - s1
-                t1 = y - j0
-                t0 = 1 - t1
-
-                result[i, j] = (
-                        t0 * (s0 * field[i0, j0] + s1 * field[i1, j0]) +
-                        t1 * (s0 * field[i0, j1] + s1 * field[i1, j1])
-                )
-
+                if x < 0.5: x = 0.5
+                if x > self.nx - 1.5: x = self.nx - 1.5
+                if y < 0.5: y = 0.5
+                if y > self.ny - 1.5: y = self.ny - 1.5
+                i0, j0 = int(x), int(y)
+                i1, j1 = i0 + 1, j0 + 1
+                s1, t1 = x - i0, y - j0
+                s0, t0 = 1 - s1, 1 - t1
+                result[i, j] = s0 * (t0 * field[i0, j0] + t1 * field[i0, j1]) + s1 * (t0 * field[i1, j0] + t1 * field[i1, j1])
         return result
 
     def _apply_buoyancy(self):
-        """Apply temperature-based buoyancy"""
         if self.params.temperature != 0:
             buoyancy = self.temperature * 0.1
             self.velocity[..., 1] += buoyancy * self.params.dt
 
     def update_simulation(self):
-        """Enhanced simulation update with new features"""
-        # Track frame time for FPS calculation
         current_time = time.time()
         dt = current_time - self.last_frame_time
         self.frame_times.append(dt)
@@ -443,7 +296,6 @@ class FluidSimulationOpenGL:
         self.fps = 1.0 / (sum(self.frame_times) / len(self.frame_times))
         self.last_frame_time = current_time
 
-        # Update simulation based on method
         if self.method == 'eulerian':
             self._compute_vorticity()
             self._apply_vorticity_confinement()
@@ -452,18 +304,15 @@ class FluidSimulationOpenGL:
         elif self.method == 'lbm':
             self._lbm_step()
 
-        # Update simulation statistics
         self.stats['max_velocity'] = np.sqrt(np.sum(self.velocity ** 2, axis=2)).max()
         self.stats['total_density'] = self.density.sum()
         self.stats['avg_temperature'] = self.temperature.mean()
 
-        # Temperature diffusion
         self.temperature = self._diffuse(self.temperature, 0.1, self.params.dt)
 
         glut.glutPostRedisplay()
 
     def keyboard(self, key: bytes, x: int, y: int):
-        """Enhanced keyboard controls"""
         key = key.lower()
         if key == b'm':
             self.method = 'lbm' if self.method == 'eulerian' else 'eulerian'
@@ -471,14 +320,12 @@ class FluidSimulationOpenGL:
         elif key == b'r':
             self._reset_simulation()
         elif key == b'c':
-            # Cycle through color modes
             modes = list(self.color_schemes.keys())
             current_idx = modes.index(self.params.color_mode)
             next_idx = (current_idx + 1) % len(modes)
             self.params.color_mode = modes[next_idx]
             self._setup_color_gradient()
         elif key == b't':
-            # Toggle temperature effect
             self.params.temperature = 0.5 if self.params.temperature == 0 else 0
         elif key == b'v':
             # Toggle vorticity confinement
