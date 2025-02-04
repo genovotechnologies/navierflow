@@ -200,9 +200,6 @@ class FluidSimulationOpenGL:
 
         gl.glClearColor(0.0, 0.0, 0.1, 1.0)
 
-        # Use the class method for reshape
-        glut.glutReshapeFunc(self.reshape)
-
         # Register all callbacks
         glut.glutMouseFunc(self.mouse_button)
         glut.glutMotionFunc(self.mouse_motion)
@@ -210,6 +207,37 @@ class FluidSimulationOpenGL:
         glut.glutReshapeFunc(self.reshape)  # Use class method for reshape
         glut.glutSpecialFunc(self.special_keys)
         glut.glutDisplayFunc(self.render)
+
+    def reshape(self, width: int, height: int):
+        """Handle window reshape events"""
+        if width == 0 or height == 0:
+            return  # Window is minimized
+
+        self.window_width = width
+        self.window_height = height
+
+        # Maintain aspect ratio
+        aspect = self.nx / self.ny
+        window_aspect = width / height
+
+        if window_aspect > aspect:
+            viewport_w = int(height * aspect)
+            viewport_h = height
+            viewport_x = (width - viewport_w) // 2
+            viewport_y = 0
+        else:
+            viewport_w = width
+            viewport_h = int(width / aspect)
+            viewport_x = 0
+            viewport_y = (height - viewport_h) // 2
+
+        gl.glViewport(viewport_x, viewport_y, viewport_w, viewport_h)
+
+        # Set up orthographic projection
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glLoadIdentity()
+        gl.glOrtho(-1, 1, -1, 1, -1, 1)
+        gl.glMatrixMode(gl.GL_MODELVIEW)
 
     def mouse_button(self, button: int, state: int, x: int, y: int):
         # Convert screen coordinates to grid coordinates
