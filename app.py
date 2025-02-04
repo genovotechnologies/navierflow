@@ -203,24 +203,23 @@ class FluidSimulationOpenGL:
     def mouse_motion(self, x: int, y: int):
         if self.mouse_down:
             # Convert window coordinates to simulation coordinates
-            sim_x = int((x / 800) * self.nx)
-            sim_y = int(((800 - y) / 800) * self.ny)  # Invert y coordinate
+            sim_x = (x / 800) * self.nx
+            sim_y = ((800 - y) / 800) * self.ny  # Invert y coordinate
 
             # Update ball position directly
             self.ball_position[0] = sim_x
             self.ball_position[1] = sim_y
 
+            # Calculate ball velocity from movement
+            current_pos = np.array([sim_x, sim_y])
+            if hasattr(self, 'last_ball_pos'):
+                self.ball_velocity = (current_pos - self.last_ball_pos) / self.params.dt
+            self.last_ball_pos = current_pos
+
             # Update mouse position for fluid interaction
-            self.mouse_pos = (sim_x, sim_y)
-            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], sim_x, sim_y)
-            self.last_mouse_pos = self.mouse_pos
-
-            # Update ball position to follow mouse
-            self.ball_position[0] = x
-            self.ball_position[1] = y
-
-            # Add fluid interaction between last position and current position
-            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], x, y)
+            self.mouse_pos = (int(sim_x), int(sim_y))
+            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1],
+                                  self.mouse_pos[0], self.mouse_pos[1])
             self.last_mouse_pos = self.mouse_pos
 
     def special_keys(self, key: int, x: int, y: int):
@@ -692,7 +691,7 @@ class FluidSimulationOpenGL:
 
                 gl.glEnable(gl.GL_TEXTURE_2D)
 
-                # Render statistics overlay
+                # Render stats
                 self._render_stats()
 
                 glut.glutSwapBuffers()
@@ -707,10 +706,11 @@ class FluidSimulationOpenGL:
 
     def _render_stats(self):
         """Render simulation statistics overlay"""
+        # Save the current matrices
         gl.glMatrixMode(gl.GL_PROJECTION)
         gl.glPushMatrix()
         gl.glLoadIdentity()
-        gl.glOrtho(0, self.nx, 0, self.ny, -1, 1)
+        gl.glOrtho(0, 800, 0, 800, -1, 1)  # Use window coordinates instead of simulation coordinates
 
         gl.glMatrixMode(gl.GL_MODELVIEW)
         gl.glPushMatrix()
@@ -718,24 +718,20 @@ class FluidSimulationOpenGL:
 
         # Disable texturing for text rendering
         gl.glDisable(gl.GL_TEXTURE_2D)
-
-        # Set text color
         gl.glColor3f(1.0, 1.0, 1.0)
 
-        # Render stats
-        _render_text(10, self.ny - 20, f"FPS: {self.fps:.1f}")
-        _render_text(10, self.ny - 40, f"Method: {self.method}")
-        _render_text(10, self.ny - 60, f"Brush Size: {self.params.brush_size}")
-        _render_text(10, self.ny - 80, f"Max Velocity: {self.stats['max_velocity']:.2f}")
+        # Render stats using window coordinates
+        _render_text(10, 780, f"FPS: {self.fps:.1f}")
+        _render_text(10, 760, f"Method: {self.method}")
+        _render_text(10, 740, f"Brush Size: {self.params.brush_size}")
+        _render_text(10, 720, f"Max Velocity: {self.stats['max_velocity']:.2f}")
 
-        # Re-enable texturing
+        # Restore state
         gl.glEnable(gl.GL_TEXTURE_2D)
-
-        # Restore matrices
+        gl.glMatrixMode(gl.GL_MODELVIEW)
         gl.glPopMatrix()
         gl.glMatrixMode(gl.GL_PROJECTION)
         gl.glPopMatrix()
-        gl.glMatrixMode(gl.GL_MODELVIEW)
 
     def _update_ball(self):
         """Enhanced ball update with vorticity and interactive fluid dynamics"""
@@ -805,13 +801,39 @@ class FluidSimulationOpenGL:
                 reflected_velocity * intensity[ball_mask, np.newaxis] * interaction_strength
         )
 
-        # Keep ball within boundaries
+        # Ensure the ball stays within the simulation boundaries
         self.ball_position[0] = np.clip(self.ball_position[0],
                                         self.ball_radius,
                                         self.nx - self.ball_radius)
         self.ball_position[1] = np.clip(self.ball_position[1],
                                         self.ball_radius,
                                         self.ny - self.ball_radius)
+
+        # Get integer position
+        ball_x, ball_y = int(self.ball_position[0]), int(self.ball_position[1])
+
+        # Create circular mask for ball influence
+        y, x = np.ogrid[-self.ball_radius:self.ball_radius + 1, -self.ball_radius:self.ball_radius + 1]
+        mask = x * x + y * y <= self.ball_radius * self.ball_radius
+
+        # Calculate valid ranges for the ball's influence
+        x_start = max(0, ball_x - self.ball_radius)
+        x_end = min(self.nx, ball_x + self.ball_radius + 1)
+        y_start = max(0, ball_y - self.ball_radius)
+        y_end = min(self.ny, ball_y + self.ball_radius + 1)
+
+        # Calculate mask indices
+        mask_x_start = max(0, -(ball_x - self.ball_radius))
+        mask_x_end = mask_x_start + (x_end - x_start)
+        mask_y_start = max(0, -(ball_y - self.ball_radius))
+        mask_y_end = mask_y_start + (y_end - y_start)
+
+        # Extract relevant part of the mask
+        local_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
+
+        # Update fluid properties in ball's vicinity
+        self.density[y_start:y_end, x_start:x_end][local_mask] += 0.1
+        self.velocity[y_start:y_end, x_start:x_end][local_mask] += self.ball_velocity[:, None] * 0.1
 
         # Reset velocity since we're controlling position directly
         self.ball_velocity = np.zeros(2, dtype=np.float32)
