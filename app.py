@@ -206,30 +206,26 @@ class FluidSimulationOpenGL:
             sim_x = (x / 800) * self.nx
             sim_y = ((800 - y) / 800) * self.ny  # Invert y coordinate
 
-            # Update ball position directly
-            self.ball_position[0] = sim_x
-            self.ball_position[1] = sim_y
-
             # Calculate ball velocity from movement
-            current_pos = np.array([sim_x, sim_y])
+            new_pos = np.array([sim_x, sim_y], dtype=np.float32)
             if hasattr(self, 'last_ball_pos'):
-                self.ball_velocity = (current_pos - self.last_ball_pos) / self.params.dt
-            self.last_ball_pos = current_pos
+                self.ball_velocity = (new_pos - self.last_ball_pos) / self.params.dt
+            else:
+                self.ball_velocity = np.zeros(2, dtype=np.float32)
+
+            # Update ball position
+            self.ball_position = new_pos
+            self.last_ball_pos = new_pos
 
             # Update mouse position for fluid interaction
             self.mouse_pos = (int(sim_x), int(sim_y))
-            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1],
-                                  self.mouse_pos[0], self.mouse_pos[1])
+            if hasattr(self, 'last_mouse_pos'):
+                self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1],
+                                      self.mouse_pos[0], self.mouse_pos[1])
             self.last_mouse_pos = self.mouse_pos
 
     def special_keys(self, key: int, x: int, y: int):
-        if key == glut.GLUT_KEY_PAGE_UP:
-            # Increase ball size
-            self.params.ball_radius = min(30, self.params.ball_radius + 1)
-        elif key == glut.GLUT_KEY_PAGE_DOWN:
-            # Decrease ball size
-            self.params.ball_radius = max(5, self.params.ball_radius - 1)
-        elif key == glut.GLUT_KEY_UP:
+        if key == glut.GLUT_KEY_UP:
             self.params.viscosity *= 1.1
         elif key == glut.GLUT_KEY_DOWN:
             self.params.viscosity *= 0.9
@@ -237,6 +233,10 @@ class FluidSimulationOpenGL:
             self.params.brush_size = max(1, self.params.brush_size - 1)
         elif key == glut.GLUT_KEY_RIGHT:
             self.params.brush_size = min(10, self.params.brush_size + 1)
+        elif key == glut.GLUT_KEY_PAGE_UP:
+            self.ball_radius = min(20, self.ball_radius + 1)
+        elif key == glut.GLUT_KEY_PAGE_DOWN:
+            self.ball_radius = max(2, self.ball_radius - 1)
 
     def _add_interaction(self, x1: int, y1: int, x2: int, y2: int):
         """Enhanced interaction with brush size and temperature effects"""
@@ -831,9 +831,16 @@ class FluidSimulationOpenGL:
         # Extract relevant part of the mask
         local_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
 
-        # Update fluid properties in ball's vicinity
+        # Create a view of the velocity field we want to modify
+        velocity_region = self.velocity[y_start:y_end, x_start:x_end]
+
+        # Update velocity only where the mask is True
+        for i in range(2):  # For each velocity component
+            velocity_component = velocity_region[..., i]
+            velocity_component[local_mask] += self.ball_velocity[i] * 0.1
+
+        # Add some density at the ball's position
         self.density[y_start:y_end, x_start:x_end][local_mask] += 0.1
-        self.velocity[y_start:y_end, x_start:x_end][local_mask] += self.ball_velocity[:, None] * 0.1
 
         # Reset velocity since we're controlling position directly
         self.ball_velocity = np.zeros(2, dtype=np.float32)
