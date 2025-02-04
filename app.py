@@ -47,8 +47,32 @@ def _render_text(x: int, y: int, text: str):
         glut.glutBitmapCharacter(glut.GLUT_BITMAP_9_BY_15, ord(char))
 
 
-def reshape(width: int, height: int):
-    gl.glViewport(0, 0, width, height)
+def reshape(self, width: int, height: int):
+    """Handle window reshape events"""
+    if width == 0 or height == 0:
+        return  # Window is minimized
+
+    self.window_width = width
+    self.window_height = height
+
+    # Maintain aspect ratio
+    aspect = self.nx / self.ny
+    window_aspect = width / height
+
+    if window_aspect > aspect:
+        viewport_w = int(height * aspect)
+        viewport_h = height
+        viewport_x = (width - viewport_w) // 2
+        viewport_y = 0
+    else:
+        viewport_w = width
+        viewport_h = int(width / aspect)
+        viewport_x = 0
+        viewport_y = (height - viewport_h) // 2
+
+    gl.glViewport(viewport_x, viewport_y, viewport_w, viewport_h)
+
+    # Set up orthographic projection
     gl.glMatrixMode(gl.GL_PROJECTION)
     gl.glLoadIdentity()
     gl.glOrtho(-1, 1, -1, 1, -1, 1)
@@ -70,11 +94,12 @@ class FluidSimulationOpenGL:
         self.method = method
         self.fps = 0.0
 
-        # Add window management variables
         self.window_width = 800
         self.window_height = 800
         self.is_fullscreen = False
-        self.window_id = None  # Store the window ID
+        self.window_id = None
+        self.saved_window_pos = (100, 100)
+        self.saved_window_size = (800, 800)
 
         self._density = np.zeros((nx, ny), dtype=np.float32)
 
@@ -156,9 +181,9 @@ class FluidSimulationOpenGL:
         glut.glutInit()
         glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGB | glut.GLUT_DEPTH)
         glut.glutInitWindowSize(self.window_width, self.window_height)
-        glut.glutInitWindowPosition(100, 100)  # Initial window position
+        glut.glutInitWindowPosition(100, 100)
 
-        # Store the window ID
+        # Create and store window ID
         self.window_id = glut.glutCreateWindow(b"Enhanced Fluid Simulation")
 
         gl.glEnable(gl.GL_BLEND)
@@ -175,6 +200,9 @@ class FluidSimulationOpenGL:
 
         gl.glClearColor(0.0, 0.0, 0.1, 1.0)
 
+        # Use the class method for reshape
+        glut.glutReshapeFunc(self.reshape)
+
         # Register all callbacks
         glut.glutMouseFunc(self.mouse_button)
         glut.glutMotionFunc(self.mouse_motion)
@@ -182,18 +210,6 @@ class FluidSimulationOpenGL:
         glut.glutReshapeFunc(self.reshape)  # Use class method for reshape
         glut.glutSpecialFunc(self.special_keys)
         glut.glutDisplayFunc(self.render)
-
-    def reshape(self, width: int, height: int):
-        """Handle window reshape events"""
-        self.window_width = width
-        self.window_height = height
-
-        # Update viewport and projection matrix
-        gl.glViewport(0, 0, width, height)
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        gl.glOrtho(-1, 1, -1, 1, -1, 1)
-        gl.glMatrixMode(gl.GL_MODELVIEW)
 
     def mouse_button(self, button: int, state: int, x: int, y: int):
         # Convert screen coordinates to grid coordinates
@@ -226,25 +242,29 @@ class FluidSimulationOpenGL:
     def mouse_motion(self, x: int, y: int):
         if self.mouse_down:
             # Convert window coordinates to simulation coordinates
-            sim_x = (x / 800) * self.nx
-            sim_y = ((800 - y) / 800) * self.ny  # Invert y coordinate
+            sim_x = (x / self.window_width) * self.nx
+            sim_y = ((self.window_height - y) / self.window_height) * self.ny
+
+            # Update ball position
+            new_pos = np.array([sim_x, sim_y], dtype=np.float32)
 
             # Calculate ball velocity from movement
-            new_pos = np.array([sim_x, sim_y], dtype=np.float32)
             if hasattr(self, 'last_ball_pos'):
                 self.ball_velocity = (new_pos - self.last_ball_pos) / self.params.dt
             else:
                 self.ball_velocity = np.zeros(2, dtype=np.float32)
 
-            # Update ball position
+            # Update positions
             self.ball_position = new_pos
             self.last_ball_pos = new_pos
 
             # Update mouse position for fluid interaction
             self.mouse_pos = (int(sim_x), int(sim_y))
             if hasattr(self, 'last_mouse_pos'):
-                self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1],
-                                      self.mouse_pos[0], self.mouse_pos[1])
+                self._add_interaction(
+                    int(self.last_mouse_pos[0]), int(self.last_mouse_pos[1]),
+                    self.mouse_pos[0], self.mouse_pos[1]
+                )
             self.last_mouse_pos = self.mouse_pos
 
     def special_keys(self, key: int, x: int, y: int):
@@ -504,24 +524,26 @@ class FluidSimulationOpenGL:
 
     def toggle_fullscreen(self):
         """Toggle between fullscreen and windowed mode"""
-        self.is_fullscreen = not self.is_fullscreen
-        if self.is_fullscreen:
-            self.window_width = glut.glutGet(glut.GLUT_SCREEN_WIDTH)
-            self.window_height = glut.glutGet(glut.GLUT_SCREEN_HEIGHT)
-            glut.glutFullScreen()
-        else:
-            # Return to windowed mode with original size
-            glut.glutReshapeWindow(800, 800)
-            glut.glutPositionWindow(100, 100)
+        if not self.is_fullscreen:
+            # Save current window position and size
+            self.saved_window_pos = (glut.glutGet(glut.GLUT_WINDOW_X),
+                                     glut.glutGet(glut.GLUT_WINDOW_Y))
+            self.saved_window_size = (self.window_width, self.window_height)
 
-    def handle_escape(self):
-        """Handle escape key press"""
-        if self.is_fullscreen:
-            # If in fullscreen, return to windowed mode
-            self.toggle_fullscreen()
+            # Switch to fullscreen
+            glut.glutFullScreen()
+            self.is_fullscreen = True
         else:
-            # If in windowed mode, minimize the window
-            glut.glutIconifyWindow()
+            # Restore windowed mode
+            glut.glutReshapeWindow(self.saved_window_size[0], self.saved_window_size[1])
+            glut.glutPositionWindow(self.saved_window_pos[0], self.saved_window_pos[1])
+            self.is_fullscreen = False
+
+    def handle_minimize(self):
+        """Handle window minimization"""
+        if self.is_fullscreen:
+            self.toggle_fullscreen()
+        glut.glutIconifyWindow()
 
     def _print_help(self):
         """Display help information"""
