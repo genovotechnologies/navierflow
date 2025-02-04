@@ -201,18 +201,21 @@ class FluidSimulationOpenGL:
                 self.mouse_down = False
 
     def mouse_motion(self, x: int, y: int):
-        # Convert screen coordinates to grid coordinates
-        grid_x = int((x / 800) * self.nx)
-        grid_y = int(((800 - y) / 800) * self.ny)
+        if self.mouse_down:
+            # Convert window coordinates to simulation coordinates
+            x = int((x / 800) * self.nx)
+            y = int(((800 - y) / 800) * self.ny)  # Invert y coordinate
 
-        if self.is_ball_selected:
-            # Move the ball, accounting for the drag offset
-            self.ball_position = np.array([grid_x - self.ball_drag_offset[0],
-                                           grid_y - self.ball_drag_offset[1]])
-        elif self.mouse_down:
-            # Normal fluid interaction
-            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], grid_x, grid_y)
-            self.last_mouse_pos = (grid_x, grid_y)
+            # Update mouse position for fluid interaction
+            self.mouse_pos = (x, y)
+
+            # Update ball position to follow mouse
+            self.ball_position[0] = x
+            self.ball_position[1] = y
+
+            # Add fluid interaction between last position and current position
+            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], x, y)
+            self.last_mouse_pos = self.mouse_pos
 
     def special_keys(self, key: int, x: int, y: int):
         if key == glut.GLUT_KEY_PAGE_UP:
@@ -661,23 +664,27 @@ class FluidSimulationOpenGL:
 
             # Draw the ball
             gl.glDisable(gl.GL_TEXTURE_2D)
-            gl.glColor3f(*self.ball_color)
+            gl.glColor3f(1.0, 1.0, 1.0)  # White color for the ball
             gl.glBegin(gl.GL_TRIANGLE_FAN)
 
-            # Convert ball position to screen coordinates
-            ball_screen_x = (self.ball_position[0] / self.nx) * 2 - 1
-            ball_screen_y = (self.ball_position[1] / self.ny) * 2 - 1
-            ball_screen_radius = self.params.ball_radius * (2 / self.nx)
+            # Convert ball position to GL coordinates (-1 to 1)
+            ball_x = (self.ball_position[0] / self.nx) * 2 - 1
+            ball_y = (self.ball_position[1] / self.ny) * 2 - 1
+            radius = (self.ball_radius / self.nx) * 2  # Convert radius to GL coordinates
 
-            gl.glVertex2f(ball_screen_x, ball_screen_y)
+            # Draw center point
+            gl.glVertex2f(ball_x, ball_y)
+
+            # Draw circle points
             num_segments = 32
             for i in range(num_segments + 1):
-                theta = 2.0 * 3.1415926 * i / num_segments
-                x = ball_screen_x + ball_screen_radius * np.cos(theta)
-                y = ball_screen_y + ball_screen_radius * np.sin(theta)
+                theta = 2.0 * np.pi * i / num_segments
+                x = ball_x + radius * np.cos(theta)
+                y = ball_y + radius * np.sin(theta)
                 gl.glVertex2f(x, y)
 
             gl.glEnd()
+            gl.glEnable(gl.GL_TEXTURE_2D)
 
             # Render statistics overlay
             self._render_stats()
@@ -798,6 +805,12 @@ class FluidSimulationOpenGL:
         self.velocity[y_start:y_end, x_start:x_end][ball_mask] += (
                 reflected_velocity * intensity[ball_mask, np.newaxis] * interaction_strength
         )
+
+        # Keep ball within boundaries
+        self.ball_position[0] = np.clip(self.ball_position[0], self.ball_radius, self.nx - self.ball_radius)
+        self.ball_position[1] = np.clip(self.ball_position[1], self.ball_radius, self.ny - self.ball_radius)
+        # Reset ball velocity since we're controlling position directly
+        self.ball_velocity = np.zeros(2, dtype=np.float32)
 
     def _verify_initialization(self):
         """Verify that all required attributes are properly initialized"""
