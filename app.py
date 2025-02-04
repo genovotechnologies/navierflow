@@ -20,6 +20,47 @@ class SimulationParams:
     vorticity: float = 0.1
     temperature: float = 0.0
 
+
+def _create_rainbow_gradient():
+    gradient = np.zeros((256, 3), dtype=np.float32)
+    for i in range(256):
+        hue = i / 255.0
+        rgb = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+        gradient[i] = rgb
+    return gradient
+
+
+def _create_grayscale_gradient():
+    gradient = np.zeros((256, 3), dtype=np.float32)
+    for i in range(256):
+        t = i / 255.0
+        gradient[i] = [t, t, t]
+    return gradient
+
+
+def _render_text(x: int, y: int, text: str):
+    """Render text using GLUT bitmap font"""
+    gl.glRasterPos2f(x, y)
+    for char in text:
+        glut.glutBitmapCharacter(glut.GLUT_BITMAP_9_BY_15, ord(char))
+
+
+def reshape(width: int, height: int):
+    gl.glViewport(0, 0, width, height)
+    gl.glMatrixMode(gl.GL_PROJECTION)
+    gl.glLoadIdentity()
+    gl.glOrtho(-1, 1, -1, 1, -1, 1)
+    gl.glMatrixMode(gl.GL_MODELVIEW)
+
+
+def _create_blue_gradient():
+    gradient = np.zeros((256, 3), dtype=np.float32)
+    for i in range(256):
+        t = i / 255.0
+        gradient[i] = [t * 0.8, t * 0.9, min(0.4 + t * 0.6, 1.0)]
+    return gradient
+
+
 class FluidSimulationOpenGL:
     def __init__(self, nx: int = 128, ny: int = 128, method: str = 'eulerian'):
         self.params = SimulationParams()
@@ -27,11 +68,13 @@ class FluidSimulationOpenGL:
         self.method = method
         self.fps = 0.0
 
+        self._density = np.zeros((nx, ny), dtype=np.float32)
+
         self.color_schemes = {
-            'blue': self._create_blue_gradient,
+            'blue': _create_blue_gradient,
             'fire': self._create_fire_gradient,
-            'rainbow': self._create_rainbow_gradient,
-            'grayscale': self._create_grayscale_gradient
+            'rainbow': _create_rainbow_gradient,
+            'grayscale': _create_grayscale_gradient
         }
 
         self.velocity = np.zeros((nx, ny, 2), dtype=np.float32)
@@ -51,46 +94,40 @@ class FluidSimulationOpenGL:
         self.mouse_pos = (0, 0)
         self.last_mouse_pos = (0, 0)
 
+        # Call this method to set up color gradient
+        self._setup_color_gradient()
+
+        # Initialize simulation stats
         self.stats = {
             'max_velocity': 0.0,
             'total_density': 0.0,
             'avg_temperature': 0.0
         }
-
-        self._setup_color_gradient()
-
         self.e = np.array([[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
                            [1, 1], [-1, 1], [-1, -1], [1, -1]], dtype=object)
         self.w = np.array([4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 / 36],
                           dtype=np.float32)
 
-    def _create_blue_gradient(self):
-        gradient = np.zeros((256, 3), dtype=np.float32)
-        for i in range(256):
-            t = i / 255.0
-            gradient[i] = [t * 0.8, t * 0.9, min(0.4 + t * 0.6, 1.0)]
-        return gradient
+    @property
+    def density(self):
+        """Get the density field"""
+        return self._density
 
+    @density.setter
+    def density(self, value):
+        """Set the density field with type checking"""
+        if not isinstance(value, np.ndarray):
+            value = np.array(value, dtype=np.float32)
+        if value.shape != (self.nx, self.ny):
+            raise ValueError(f"Density field must have shape ({self.nx}, {self.ny})")
+        self._density = value.astype(np.float32)
+
+    @property
     def _create_fire_gradient(self):
         gradient = np.zeros((256, 3), dtype=np.float32)
         for i in range(256):
             t = i / 255.0
             gradient[i] = [min(t * 2, 1.0), t * t, t * 0.5]
-        return gradient
-
-    def _create_rainbow_gradient(self):
-        gradient = np.zeros((256, 3), dtype=np.float32)
-        for i in range(256):
-            hue = i / 255.0
-            rgb = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
-            gradient[i] = rgb
-        return gradient
-
-    def _create_grayscale_gradient(self):
-        gradient = np.zeros((256, 3), dtype=np.float32)
-        for i in range(256):
-            t = i / 255.0
-            gradient[i] = [t, t, t]
         return gradient
 
     def _setup_color_gradient(self):
@@ -119,15 +156,8 @@ class FluidSimulationOpenGL:
         glut.glutMouseFunc(self.mouse_button)
         glut.glutMotionFunc(self.mouse_motion)
         glut.glutKeyboardFunc(self.keyboard)
-        glut.glutReshapeFunc(self.reshape)
+        glut.glutReshapeFunc(reshape)
         glut.glutSpecialFunc(self.special_keys)
-
-    def reshape(self, width: int, height: int):
-        gl.glViewport(0, 0, width, height)
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        gl.glOrtho(-1, 1, -1, 1, -1, 1)
-        gl.glMatrixMode(gl.GL_MODELVIEW)
 
     def mouse_button(self, button: int, state: int, x: int, y: int):
         if button == glut.GLUT_LEFT_BUTTON:
@@ -143,7 +173,7 @@ class FluidSimulationOpenGL:
             self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], x, y)
             self.last_mouse_pos = self.mouse_pos
 
-    def special_keys(self, key: int, x: int, y: int):
+    def special_keys(self, key: int):
         if key == glut.GLUT_KEY_UP:
             self.params.viscosity *= 1.1
         elif key == glut.GLUT_KEY_DOWN:
@@ -288,6 +318,8 @@ class FluidSimulationOpenGL:
             self.velocity[..., 1] += buoyancy * self.params.dt
 
     def update_simulation(self):
+        """Enhanced simulation update with new features"""
+        self._verify_initialization()
         current_time = time.time()
         dt = current_time - self.last_frame_time
         self.frame_times.append(dt)
@@ -312,7 +344,7 @@ class FluidSimulationOpenGL:
 
         glut.glutPostRedisplay()
 
-    def keyboard(self, key: bytes, x: int, y: int):
+    def keyboard(self, key: bytes):
         key = key.lower()
         if key == b'm':
             self.method = 'lbm' if self.method == 'eulerian' else 'eulerian'
@@ -466,8 +498,8 @@ class FluidSimulationOpenGL:
 
     def render(self):
         """Enhanced rendering with statistics overlay"""
+        self._verify_initialization()
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
 
         # Enhanced visualization
         self.density = self._diffuse(self.density, self.params.diffusion_rate, self.params.dt)
@@ -496,13 +528,13 @@ class FluidSimulationOpenGL:
 
         # Draw textured quad
         gl.glBegin(gl.GL_QUADS)
-        gl.glTexCoord2f(0, 0);
+        gl.glTexCoord2f(0, 0)
         gl.glVertex2f(-1, -1)
-        gl.glTexCoord2f(1, 0);
+        gl.glTexCoord2f(1, 0)
         gl.glVertex2f(1, -1)
-        gl.glTexCoord2f(1, 1);
+        gl.glTexCoord2f(1, 1)
         gl.glVertex2f(1, 1)
-        gl.glTexCoord2f(0, 1);
+        gl.glTexCoord2f(0, 1)
         gl.glVertex2f(-1, 1)
         gl.glEnd()
 
@@ -529,10 +561,10 @@ class FluidSimulationOpenGL:
         gl.glColor3f(1.0, 1.0, 1.0)
 
         # Render stats
-        self._render_text(10, self.ny - 20, f"FPS: {self.fps:.1f}")
-        self._render_text(10, self.ny - 40, f"Method: {self.method}")
-        self._render_text(10, self.ny - 60, f"Brush Size: {self.params.brush_size}")
-        self._render_text(10, self.ny - 80, f"Max Velocity: {self.stats['max_velocity']:.2f}")
+        _render_text(10, self.ny - 20, f"FPS: {self.fps:.1f}")
+        _render_text(10, self.ny - 40, f"Method: {self.method}")
+        _render_text(10, self.ny - 60, f"Brush Size: {self.params.brush_size}")
+        _render_text(10, self.ny - 80, f"Max Velocity: {self.stats['max_velocity']:.2f}")
 
         # Re-enable texturing
         gl.glEnable(gl.GL_TEXTURE_2D)
@@ -542,12 +574,6 @@ class FluidSimulationOpenGL:
         gl.glMatrixMode(gl.GL_PROJECTION)
         gl.glPopMatrix()
         gl.glMatrixMode(gl.GL_MODELVIEW)
-
-    def _render_text(self, x: int, y: int, text: str):
-        """Render text using GLUT bitmap font"""
-        gl.glRasterPos2f(x, y)
-        for char in text:
-            glut.glutBitmapCharacter(glut.GLUT_BITMAP_9_BY_15, ord(char))
 
     def _update_ball(self):
         """Update position and velocity of the ball (particle) in the simulation"""
@@ -580,14 +606,15 @@ class FluidSimulationOpenGL:
                 self.ball_position[1] > self.ny - self.ball_radius):
             self.ball_velocity[1] *= -1
 
-    # Add this to the existing __init__ method in the FluidSimulationOpenGL class
-    def __init__(self, nx: int = 128, ny: int = 128, method: str = 'eulerian'):
-        # Existing initialization code...
-
-        # Ensure this is added after other initializations
-        self.ball_position = np.array([nx // 2, ny // 2], dtype=np.float32)
-        self.ball_velocity = np.array([0.0, 0.0], dtype=np.float32)
-        self.ball_radius = 10  # Consistent with existing attribute
+    def _verify_initialization(self):
+        """Verify that all required attributes are properly initialized"""
+        required_attrs = ['density', 'velocity', 'temperature', 'vorticity']
+        for attr in required_attrs:
+            if not hasattr(self, attr) or getattr(self, attr) is None:
+                if attr == 'density':
+                    self._density = np.zeros((self.nx, self.ny), dtype=np.float32)
+                else:
+                    setattr(self, attr, np.zeros((self.nx, self.ny), dtype=np.float32))
 
     def run(self):
         """Start the enhanced simulation loop"""
@@ -614,6 +641,18 @@ if __name__ == "__main__":
     parser.add_argument('--vorticity', type=float, default=0.1,
                         help='Vorticity confinement strength')
     args = parser.parse_args()
+
+    sim = FluidSimulationOpenGL(
+        nx=args.size,
+        ny=args.size,
+        method=args.method
+    )
+    # Set the parameters from arguments
+    sim.params.viscosity = args.viscosity
+    sim.params.vorticity = args.vorticity
+    sim.params.color_mode = args.color_mode
+    # Initialize all fields
+    sim._verify_initialization()
 
     sim = FluidSimulationOpenGL(nx=args.size, ny=args.size, method=args.method)
     sim.run()
