@@ -20,7 +20,7 @@ class SimulationParams:
     vorticity: float = 0.1
     temperature: float = 0.0
     ball_radius: float = 10.0
-    ball_interaction_strength: float = 0.5
+    ball_interaction_strength: float = 3.0
 
 
 def _create_rainbow_gradient():
@@ -732,71 +732,72 @@ class FluidSimulationOpenGL:
         gl.glMatrixMode(gl.GL_MODELVIEW)
 
     def _update_ball(self):
-        """Enhanced ball update with more fluid interaction"""
+        """Enhanced ball update with vorticity and interactive fluid dynamics"""
         ball_x, ball_y = map(int, self.ball_position)
 
         # Ensure the ball is within the grid bounds
         ball_x = max(0, min(ball_x, self.nx - 1))
         ball_y = max(0, min(ball_y, self.ny - 1))
 
-        # Calculate the ball's influence on the velocity field
+        # Calculate ball radius based on simulation parameters
         ball_radius = int(self.params.ball_radius)
-        y_grid, x_grid = np.ogrid[-ball_radius:ball_radius + 1, -ball_radius:ball_radius + 1]
-        mask = x_grid * x_grid + y_grid * y_grid <= ball_radius * ball_radius
 
-        # Calculate local velocity and influence
-        local_velocity = self.velocity[ball_x, ball_y]
+        # Create a mask for the ball region
+        Y, X = np.ogrid[-ball_radius:ball_radius + 1, -ball_radius:ball_radius + 1]
+        ball_mask = X * X + Y * Y <= ball_radius * ball_radius
 
-        # Apply velocity field interaction
+        # Calculate local vorticity around the ball
+        local_vorticity = self.vorticity[
+                          max(0, ball_x - ball_radius):min(self.nx, ball_x + ball_radius + 1),
+                          max(0, ball_y - ball_radius):min(self.ny, ball_y + ball_radius + 1)
+                          ]
+
+        # Calculate velocity divergence
+        div_x = np.roll(self.velocity[..., 0], -1, axis=0) - np.roll(self.velocity[..., 0], 1, axis=0)
+        div_y = np.roll(self.velocity[..., 1], -1, axis=1) - np.roll(self.velocity[..., 1], 1, axis=1)
+        divergence = div_x + div_y
+
+        # Ball-fluid interaction
         interaction_strength = self.params.ball_interaction_strength
 
-        # Create a region around the ball
+        # Apply ball boundary conditions (bounce-back)
+        reflected_velocity = -self.velocity[ball_x, ball_y] * 0.8
+
+        # Update ball velocity based on fluid dynamics
+        self.ball_velocity += (
+                interaction_strength * np.array([
+            np.mean(divergence),  # x-direction
+            np.mean(local_vorticity)  # y-direction
+        ])
+        )
+
+        # Add some damping
+        self.ball_velocity *= 0.95
+
+        # Update ball position
+        self.ball_position += self.ball_velocity * self.params.dt
+
+        # Boundary conditions with energy loss
+        for i in range(2):
+            if (self.ball_position[i] < ball_radius or
+                    self.ball_position[i] > (self.nx if i == 0 else self.ny) - ball_radius):
+                self.ball_velocity[i] *= -0.8  # Bounce with energy loss
+
+        # Modify local velocity field around the ball
         x_start = max(0, ball_x - ball_radius)
         x_end = min(self.nx, ball_x + ball_radius + 1)
         y_start = max(0, ball_y - ball_radius)
         y_end = min(self.ny, ball_y + ball_radius + 1)
 
-        # Adjust mask for boundary cases
-        mask_x_start = max(0, ball_radius - (ball_x - x_start))
-        mask_x_end = mask_x_start + (x_end - x_start)
-        mask_y_start = max(0, ball_radius - (ball_y - y_start))
-        mask_y_end = mask_y_start + (y_end - y_start)
-
-        local_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
-
-        # Calculate distances from ball center
-        y_coords, x_coords = np.meshgrid(
-            np.arange(y_start, y_end),
-            np.arange(x_start, x_end),
-            indexing='ij'
-        )
-        distances = np.sqrt((x_coords - ball_x) ** 2 + (y_coords - ball_y) ** 2)
-
-        # Create a smoothing intensity based on distance
+        # Create distance-based intensity mask
+        Y, X = np.ogrid[y_start:y_end, x_start:x_end]
+        distances = np.sqrt((X - ball_x) ** 2 + (Y - ball_y) ** 2)
         intensity = np.maximum(0, 1.0 - distances / ball_radius)
 
-        # Modify velocity around the ball
-        if local_mask.shape == intensity.shape:
-            # Influence velocity field
-            self.velocity[y_start:y_end, x_start:x_end][local_mask] += (
-                    local_velocity * interaction_strength * intensity[local_mask, np.newaxis]
-            )
-
-        # Update ball velocity with some damping
-        self.ball_velocity += local_velocity * interaction_strength
-        self.ball_velocity *= 0.95  # Damping
-
-        # Update ball position
-        self.ball_position += self.ball_velocity * self.params.dt
-
-        # Boundary conditions - bounce off walls with energy loss
-        if (self.ball_position[0] < ball_radius or
-                self.ball_position[0] > self.nx - ball_radius):
-            self.ball_velocity[0] *= -0.8  # Energy loss on bounce
-
-        if (self.ball_position[1] < ball_radius or
-                self.ball_position[1] > self.ny - ball_radius):
-            self.ball_velocity[1] *= -0.8  # Energy loss on bounce
+        # Apply reflected velocity to fluid around the ball
+        self.velocity[y_start:y_end, x_start:x_end][ball_mask] += (
+                reflected_velocity * intensity[ball_mask, np.newaxis] * interaction_strength
+        )
 
     def _verify_initialization(self):
         """Verify that all required attributes are properly initialized"""
