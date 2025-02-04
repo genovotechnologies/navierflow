@@ -30,7 +30,7 @@ class FluidSimulationOpenGL:
         self.method = method
 
         # Initialize fps attribute
-        self.fps = 0.0  # Add this line
+        self.fps = 0.0
 
         # Multiple color schemes
         self.color_schemes = {
@@ -46,10 +46,30 @@ class FluidSimulationOpenGL:
         self.temperature = np.zeros((nx, ny), dtype=np.float32)
         self.vorticity = np.zeros((nx, ny), dtype=np.float32)
 
+        # Initialize particle (ball)
+        self.ball_position = np.array([nx // 2, ny // 2], dtype=np.float32)
+        self.ball_velocity = np.array([0.0, 0.0], dtype=np.float32)
+        self.ball_radius = 10
+
         # Performance tracking
-        self.frame_times: List[float] = []
+        self.frame_times = []
         self.last_frame_time = time.time()
-        self.fps = 0.0
+
+        # Initialize OpenGL-related attributes
+        self.texture = None
+        self.mouse_down = False
+        self.mouse_pos = (0, 0)
+        self.last_mouse_pos = (0, 0)
+
+        # Initialize simulation stats
+        self.stats = {
+            'max_velocity': 0.0,
+            'total_density': 0.0,
+            'avg_temperature': 0.0
+        }
+
+        # Call this method to set up color gradient
+        self._setup_color_gradient()
 
         # LBM specific variables with arbitrary precision integers
         self.e = np.array([[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
