@@ -70,6 +70,12 @@ class FluidSimulationOpenGL:
         self.method = method
         self.fps = 0.0
 
+        # Add window management variables
+        self.window_width = 800
+        self.window_height = 800
+        self.is_fullscreen = False
+        self.window_id = None  # Store the window ID
+
         self._density = np.zeros((nx, ny), dtype=np.float32)
 
         self.color_schemes = {
@@ -149,8 +155,11 @@ class FluidSimulationOpenGL:
     def initialize_opengl(self):
         glut.glutInit()
         glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGB | glut.GLUT_DEPTH)
-        glut.glutInitWindowSize(800, 800)
-        glut.glutCreateWindow(b"Enhanced Fluid Simulation")
+        glut.glutInitWindowSize(self.window_width, self.window_height)
+        glut.glutInitWindowPosition(100, 100)  # Initial window position
+
+        # Store the window ID
+        self.window_id = glut.glutCreateWindow(b"Enhanced Fluid Simulation")
 
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
@@ -166,11 +175,25 @@ class FluidSimulationOpenGL:
 
         gl.glClearColor(0.0, 0.0, 0.1, 1.0)
 
+        # Register all callbacks
         glut.glutMouseFunc(self.mouse_button)
         glut.glutMotionFunc(self.mouse_motion)
         glut.glutKeyboardFunc(self.keyboard)
-        glut.glutReshapeFunc(reshape)
+        glut.glutReshapeFunc(self.reshape)  # Use class method for reshape
         glut.glutSpecialFunc(self.special_keys)
+        glut.glutDisplayFunc(self.render)
+
+    def reshape(self, width: int, height: int):
+        """Handle window reshape events"""
+        self.window_width = width
+        self.window_height = height
+
+        # Update viewport and projection matrix
+        gl.glViewport(0, 0, width, height)
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glLoadIdentity()
+        gl.glOrtho(-1, 1, -1, 1, -1, 1)
+        gl.glMatrixMode(gl.GL_MODELVIEW)
 
     def mouse_button(self, button: int, state: int, x: int, y: int):
         # Convert screen coordinates to grid coordinates
@@ -444,11 +467,11 @@ class FluidSimulationOpenGL:
         try:
             key = key.lower()
 
-            if key == b'+':
+            if key == b'i':
                 # Increase ball interaction strength
                 self.params.ball_interaction_strength = min(2.0,
                                                             self.params.ball_interaction_strength + 0.1)
-            elif key == b'-':
+            elif key == b'k':
                 # Decrease ball interaction strength
                 self.params.ball_interaction_strength = max(0.0,
                                                             self.params.ball_interaction_strength - 0.1)
@@ -467,29 +490,58 @@ class FluidSimulationOpenGL:
             elif key == b't':
                 # Toggle temperature effect
                 self.params.temperature = 0.5 if self.params.temperature == 0 else 0
+            elif key == b'f':  # 'F' key for fullscreen toggle
+                self.toggle_fullscreen()
             elif key == b'v':
                 # Toggle vorticity confinement
                 self.params.vorticity = 0.1 if self.params.vorticity == 0 else 0
             elif key == b'h':
                 self._print_help()
+            elif key == b'\x1b':  # ESC key
+                self.handle_escape()
         except Exception as e:
             print(f"Error in keyboard handler: {str(e)}")
+
+    def toggle_fullscreen(self):
+        """Toggle between fullscreen and windowed mode"""
+        self.is_fullscreen = not self.is_fullscreen
+        if self.is_fullscreen:
+            self.window_width = glut.glutGet(glut.GLUT_SCREEN_WIDTH)
+            self.window_height = glut.glutGet(glut.GLUT_SCREEN_HEIGHT)
+            glut.glutFullScreen()
+        else:
+            # Return to windowed mode with original size
+            glut.glutReshapeWindow(800, 800)
+            glut.glutPositionWindow(100, 100)
+
+    def handle_escape(self):
+        """Handle escape key press"""
+        if self.is_fullscreen:
+            # If in fullscreen, return to windowed mode
+            self.toggle_fullscreen()
+        else:
+            # If in windowed mode, minimize the window
+            glut.glutIconifyWindow()
 
     def _print_help(self):
         """Display help information"""
         print("\nEnhanced Fluid Simulation Controls:")
         print("-----------------------------------")
         print("Mouse drag: Add fluid")
+        print("F: Toggle fullscreen")
+        print("ESC: Exit fullscreen / Minimize window")
         print("m: Switch method (Eulerian/LBM)")
         print("r: Reset simulation")
         print("c: Cycle color modes")
         print("t: Toggle temperature effect")
         print("v: Toggle vorticity confinement")
         print("Arrow keys: Adjust brush size and viscosity")
+        print("h: Show this help message")
+        print(f"Current FPS: {getattr(self, 'fps', 0):.1f}")
         print("\nBall/Particle Controls:")
         print("Click and drag ball to move")
         print("Page Up/Down: Resize ball")
-        print("+/-: Adjust ball interaction strength")
+        print("i/k: Adjust ball interaction strength")
         print("h: Show this help message")
         print(f"Current FPS: {getattr(self, 'fps', 0):.1f}")
 
