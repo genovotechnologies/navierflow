@@ -184,22 +184,68 @@ class FluidSimulationOpenGL:
             self.params.brush_size = min(10, self.params.brush_size + 1)
 
     def _add_interaction(self, x1: int, y1: int, x2: int, y2: int):
-        x1, y1 = int(x1), int(y1)
-        x2, y2 = int(x2), int(y2)
-        dx, dy = x2 - x1, y2 - y1
-        distance = np.sqrt(dx * dx + dy * dy)
+        """Enhanced interaction with brush size and temperature effects"""
+        try:
+            x1, y1 = int(x1), int(y1)
+            x2, y2 = int(x2), int(y2)
 
-        if distance > 0:
-            dx, dy = dx / distance, dy / distance
-            brush_radius = self.params.brush_size
-            y, x = np.ogrid[-brush_radius:brush_radius + 1, -brush_radius:brush_radius + 1]
-            mask = x * x + y * y <= brush_radius * brush_radius
+            # Calculate direction and distance
+            dx, dy = x2 - x1, y2 - y1
+            distance = np.sqrt(dx * dx + dy * dy)
 
-            steps = max(int(distance), 1)
-            for i in range(steps):
-                xi = int(x1 + dx * i)
-                yi = int(y1 + dy * i)
-                self.density[xi - brush_radius:xi + brush_radius + 1, yi - brush_radius:yi + brush_radius + 1][mask] += self.params.density_multiplier
+            if distance > 0:
+                dx, dy = dx / distance, dy / distance
+
+                # Create brush mask
+                brush_radius = self.params.brush_size
+                y_grid, x_grid = np.ogrid[-brush_radius:brush_radius + 1, -brush_radius:brush_radius + 1]
+                mask = x_grid * x_grid + y_grid * y_grid <= brush_radius * brush_radius
+
+                # Apply along the path
+                steps = max(int(distance), 1)
+                for i in range(steps):
+                    cx = int(x1 + dx * i)
+                    cy = int(y1 + dy * i)
+
+                    # Calculate valid ranges for the brush
+                    x_start = max(0, cx - brush_radius)
+                    x_end = min(self.nx, cx + brush_radius + 1)
+                    y_start = max(0, cy - brush_radius)
+                    y_end = min(self.ny, cy + brush_radius + 1)
+
+                    # Calculate mask ranges
+                    mask_x_start = max(0, brush_radius - cx)
+                    mask_x_end = min(2 * brush_radius + 1, brush_radius + (self.nx - cx))
+                    mask_y_start = max(0, brush_radius - cy)
+                    mask_y_end = min(2 * brush_radius + 1, brush_radius + (self.ny - cy))
+
+                    # Extract relevant part of the mask
+                    local_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
+
+                    # Calculate intensity based on distance from center
+                    y_coords, x_coords = np.mgrid[y_start:y_end, x_start:x_end]
+                    distances = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
+                    intensity = np.maximum(0, 1.0 - distances / brush_radius)
+
+                    # Apply effects where mask is True
+                    self.density[y_start:y_end, x_start:x_end][local_mask] += (
+                            self.params.density_multiplier * intensity[local_mask]
+                    )
+                    self.temperature[y_start:y_end, x_start:x_end][local_mask] += (
+                            self.params.temperature * intensity[local_mask]
+                    )
+
+                    # Add velocity with falloff
+                    velocity_contribution = np.array([dx, dy]) * self.params.velocity_multiplier
+                    self.velocity[y_start:y_end, x_start:x_end][local_mask] += (
+                            velocity_contribution * intensity[local_mask, np.newaxis]
+                    )
+
+        except Exception as e:
+            print(f"Error in _add_interaction: {str(e)}")
+            # Initialize density if it doesn't exist
+            if not hasattr(self, 'density'):
+                self.density = np.zeros((self.nx, self.ny), dtype=np.float32)
 
     def _compute_vorticity(self):
         dx = np.roll(self.velocity[..., 1], -1, axis=0) - np.roll(self.velocity[..., 1], 1, axis=0)
