@@ -19,7 +19,7 @@ class SimulationParams:
     brush_size: int = 3
     vorticity: float = 0.1
     temperature: float = 0.0
-    ball_radius: float = 10.0
+    ball_radius: int = 10
     ball_interaction_strength: float = 3.0
 
 
@@ -203,11 +203,17 @@ class FluidSimulationOpenGL:
     def mouse_motion(self, x: int, y: int):
         if self.mouse_down:
             # Convert window coordinates to simulation coordinates
-            x = int((x / 800) * self.nx)
-            y = int(((800 - y) / 800) * self.ny)  # Invert y coordinate
+            sim_x = int((x / 800) * self.nx)
+            sim_y = int(((800 - y) / 800) * self.ny)  # Invert y coordinate
+
+            # Update ball position directly
+            self.ball_position[0] = sim_x
+            self.ball_position[1] = sim_y
 
             # Update mouse position for fluid interaction
-            self.mouse_pos = (x, y)
+            self.mouse_pos = (sim_x, sim_y)
+            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], sim_x, sim_y)
+            self.last_mouse_pos = self.mouse_pos
 
             # Update ball position to follow mouse
             self.ball_position[0] = x
@@ -662,41 +668,34 @@ class FluidSimulationOpenGL:
             finally:
                 gl.glEnd()
 
-            # Draw the ball
-            gl.glDisable(gl.GL_TEXTURE_2D)
-            gl.glColor3f(1.0, 1.0, 1.0)  # White color for the ball
-            gl.glBegin(gl.GL_TRIANGLE_FAN)
+                # Draw the ball
+                gl.glDisable(gl.GL_TEXTURE_2D)
+                gl.glColor3f(1.0, 1.0, 1.0)  # White color for the ball
 
-            # Convert ball position to GL coordinates (-1 to 1)
-            ball_x = (self.ball_position[0] / self.nx) * 2 - 1
-            ball_y = (self.ball_position[1] / self.ny) * 2 - 1
-            radius = (self.ball_radius / self.nx) * 2  # Convert radius to GL coordinates
+                # Convert ball position to GL coordinates (-1 to 1)
+                ball_x = (self.ball_position[0] / self.nx) * 2 - 1
+                ball_y = (self.ball_position[1] / self.ny) * 2 - 1
+                radius = (self.ball_radius / self.nx) * 2  # Convert radius to GL coordinates
 
-            # Draw center point
-            gl.glVertex2f(ball_x, ball_y)
+                # Draw circle
+                gl.glBegin(gl.GL_TRIANGLE_FAN)
+                gl.glVertex2f(ball_x, ball_y)  # Center point
 
-            # Draw circle points
-            num_segments = 32
-            for i in range(num_segments + 1):
-                theta = 2.0 * np.pi * i / num_segments
-                x = ball_x + radius * np.cos(theta)
-                y = ball_y + radius * np.sin(theta)
-                gl.glVertex2f(x, y)
+                # Draw circle points
+                segments = 32
+                for i in range(segments + 1):
+                    angle = 2.0 * np.pi * i / segments
+                    x = ball_x + radius * np.cos(angle)
+                    y = ball_y + radius * np.sin(angle)
+                    gl.glVertex2f(x, y)
+                gl.glEnd()
 
-            gl.glEnd()
-            gl.glEnable(gl.GL_TEXTURE_2D)
+                gl.glEnable(gl.GL_TEXTURE_2D)
 
-            # Render statistics overlay
-            self._render_stats()
+                # Render statistics overlay
+                self._render_stats()
 
-            # Restore matrices
-            gl.glMatrixMode(gl.GL_MODELVIEW)
-            gl.glPopMatrix()
-            gl.glMatrixMode(gl.GL_PROJECTION)
-            gl.glPopMatrix()
-
-            # Swap buffers
-            glut.glutSwapBuffers()
+                glut.glutSwapBuffers()
 
         except Exception as e:
             print(f"Rendering error: {e}")
@@ -807,9 +806,14 @@ class FluidSimulationOpenGL:
         )
 
         # Keep ball within boundaries
-        self.ball_position[0] = np.clip(self.ball_position[0], self.ball_radius, self.nx - self.ball_radius)
-        self.ball_position[1] = np.clip(self.ball_position[1], self.ball_radius, self.ny - self.ball_radius)
-        # Reset ball velocity since we're controlling position directly
+        self.ball_position[0] = np.clip(self.ball_position[0],
+                                        self.ball_radius,
+                                        self.nx - self.ball_radius)
+        self.ball_position[1] = np.clip(self.ball_position[1],
+                                        self.ball_radius,
+                                        self.ny - self.ball_radius)
+
+        # Reset velocity since we're controlling position directly
         self.ball_velocity = np.zeros(2, dtype=np.float32)
 
     def _verify_initialization(self):
