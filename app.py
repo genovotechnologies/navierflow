@@ -611,123 +611,112 @@ class FluidSimulationOpenGL:
         self.f = f_boundary
 
     def render(self):
-        """Enhanced rendering with robust OpenGL state management"""
-        try:
-            # Clear the color buffer
-            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        """Enhanced rendering with statistics overlay"""
+        self._verify_initialization()
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-            # Save the current matrix mode and matrix
-            gl.glMatrixMode(gl.GL_PROJECTION)
-            gl.glPushMatrix()
-            gl.glLoadIdentity()
-            gl.glOrtho(-1, 1, -1, 1, -1, 1)
+        # Save current matrices
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glLoadIdentity()
+        gl.glOrtho(-1, 1, -1, 1, -1, 1)
 
-            gl.glMatrixMode(gl.GL_MODELVIEW)
-            gl.glPushMatrix()
-            gl.glLoadIdentity()
+        gl.glMatrixMode(gl.GL_MODELVIEW)
+        gl.glLoadIdentity()
 
-            # Enhanced visualization
-            self.density = self._diffuse(self.density, self.params.diffusion_rate, self.params.dt)
-            enhanced_density = np.clip(self.density * 4.0, 0, 1)
-            normalized_density = (enhanced_density * 255).astype(int)
+        # Enhanced visualization
+        self.density = self._diffuse(self.density, self.params.diffusion_rate, self.params.dt)
+        enhanced_density = np.clip(self.density * 4.0, 0, 1)
+        normalized_density = (enhanced_density * 255).astype(int)
 
-            # Add temperature and vorticity effects to visualization
-            color_density = self.color_gradient[normalized_density].copy()
+        # Add temperature and vorticity effects to visualization
+        color_density = self.color_gradient[normalized_density].copy()
 
-            # Add temperature effect (red tint)
-            temp_mask = self.temperature > 0
-            color_density[temp_mask] += np.array([0.3, 0.0, 0.0]) * self.temperature[temp_mask, np.newaxis]
+        # Add temperature effect (red tint)
+        temp_mask = self.temperature > 0
+        color_density[temp_mask] += np.array([0.3, 0.0, 0.0]) * self.temperature[temp_mask, np.newaxis]
 
-            # Add vorticity effect (swirl highlights)
-            vorticity_magnitude = np.abs(self.vorticity)
-            normalized_vorticity = vorticity_magnitude / (np.max(vorticity_magnitude) + 1e-6)
-            color_density += np.array([0.1, 0.1, 0.2]) * normalized_vorticity[..., np.newaxis]
+        # Add vorticity effect (swirl highlights)
+        vorticity_magnitude = np.abs(self.vorticity)
+        normalized_vorticity = vorticity_magnitude / (np.max(vorticity_magnitude) + 1e-6)
+        color_density += np.array([0.1, 0.1, 0.2]) * normalized_vorticity[..., np.newaxis]
 
-            # Ensure colors stay in valid range
-            color_density = np.clip(color_density, 0, 1)
+        # Ensure colors stay in valid range
+        color_density = np.clip(color_density, 0, 1)
 
-            # Bind texture and generate mipmaps
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
-            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, self.nx, self.ny, 0,
-                            gl.GL_RGB, gl.GL_FLOAT, color_density)
-            gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+        # Enable texturing
+        gl.glEnable(gl.GL_TEXTURE_2D)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
 
-            # Draw textured quad with explicit error checking
-            gl.glEnable(gl.GL_TEXTURE_2D)
-            gl.glBegin(gl.GL_QUADS)
-            try:
-                gl.glTexCoord2f(0, 0)
-                gl.glVertex2f(-1, -1)
-                gl.glTexCoord2f(1, 0)
-                gl.glVertex2f(1, -1)
-                gl.glTexCoord2f(1, 1)
-                gl.glVertex2f(1, 1)
-                gl.glTexCoord2f(0, 1)
-                gl.glVertex2f(-1, 1)
-            finally:
-                gl.glEnd()
+        # Generate mipmaps for better quality
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, self.nx, self.ny, 0,
+                        gl.GL_RGB, gl.GL_FLOAT, color_density)
+        gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
 
-                # Draw the ball
-                gl.glDisable(gl.GL_TEXTURE_2D)
-                gl.glColor3f(1.0, 1.0, 1.0)  # White color for the ball
+        # Draw textured quad
+        gl.glBegin(gl.GL_QUADS)
+        gl.glTexCoord2f(0, 0)
+        gl.glVertex2f(-1, -1)
+        gl.glTexCoord2f(1, 0)
+        gl.glVertex2f(1, -1)
+        gl.glTexCoord2f(1, 1)
+        gl.glVertex2f(1, 1)
+        gl.glTexCoord2f(0, 1)
+        gl.glVertex2f(-1, 1)
+        gl.glEnd()
 
-                # Convert ball position to GL coordinates (-1 to 1)
-                ball_x = (self.ball_position[0] / self.nx) * 2 - 1
-                ball_y = (self.ball_position[1] / self.ny) * 2 - 1
-                radius = (self.ball_radius / self.nx) * 2  # Convert radius to GL coordinates
+        # Draw the ball
+        gl.glDisable(gl.GL_TEXTURE_2D)
+        gl.glColor3f(1.0, 1.0, 1.0)  # White color for the ball
 
-                # Draw circle
-                gl.glBegin(gl.GL_TRIANGLE_FAN)
-                gl.glVertex2f(ball_x, ball_y)  # Center point
+        # Convert ball position to GL coordinates (-1 to 1)
+        ball_x = (self.ball_position[0] / self.nx) * 2 - 1
+        ball_y = (self.ball_position[1] / self.ny) * 2 - 1
+        radius = (self.ball_radius / self.nx) * 2  # Convert radius to GL coordinates
 
-                # Draw circle points
-                segments = 32
-                for i in range(segments + 1):
-                    angle = 2.0 * np.pi * i / segments
-                    x = ball_x + radius * np.cos(angle)
-                    y = ball_y + radius * np.sin(angle)
-                    gl.glVertex2f(x, y)
-                gl.glEnd()
+        # Draw circle
+        gl.glBegin(gl.GL_TRIANGLE_FAN)
+        gl.glVertex2f(ball_x, ball_y)  # Center point
 
-                gl.glEnable(gl.GL_TEXTURE_2D)
+        # Draw circle points
+        segments = 32
+        for i in range(segments + 1):
+            angle = 2.0 * np.pi * i / segments
+            x = ball_x + radius * np.cos(angle)
+            y = ball_y + radius * np.sin(angle)
+            gl.glVertex2f(x, y)
+        gl.glEnd()
 
-                # Render stats
-                self._render_stats()
+        # Render stats with separate matrix stack
+        self._render_stats()
 
-                glut.glutSwapBuffers()
-
-        except Exception as e:
-            print(f"Rendering error: {e}")
-            # Attempt to reset OpenGL state
-            gl.glMatrixMode(gl.GL_MODELVIEW)
-            gl.glLoadIdentity()
-            gl.glMatrixMode(gl.GL_PROJECTION)
-            gl.glLoadIdentity()
+        glut.glutSwapBuffers()
 
     def _render_stats(self):
         """Render simulation statistics overlay"""
-        # Save the current matrices
+        # Set up ortho projection for 2D text rendering
         gl.glMatrixMode(gl.GL_PROJECTION)
         gl.glPushMatrix()
         gl.glLoadIdentity()
-        gl.glOrtho(0, 800, 0, 800, -1, 1)  # Use window coordinates instead of simulation coordinates
+        gl.glOrtho(0, 800, 0, 800, -1, 1)  # Use window coordinates
 
         gl.glMatrixMode(gl.GL_MODELVIEW)
         gl.glPushMatrix()
         gl.glLoadIdentity()
 
-        # Disable texturing for text rendering
+        # Disable texturing and set color for text
         gl.glDisable(gl.GL_TEXTURE_2D)
         gl.glColor3f(1.0, 1.0, 1.0)
 
-        # Render stats using window coordinates
+        # Render stats (in window coordinates)
         _render_text(10, 780, f"FPS: {self.fps:.1f}")
         _render_text(10, 760, f"Method: {self.method}")
         _render_text(10, 740, f"Brush Size: {self.params.brush_size}")
         _render_text(10, 720, f"Max Velocity: {self.stats['max_velocity']:.2f}")
 
-        # Restore state
+        # Clean up state
         gl.glEnable(gl.GL_TEXTURE_2D)
+
+        # Restore matrices in reverse order
         gl.glMatrixMode(gl.GL_MODELVIEW)
         gl.glPopMatrix()
         gl.glMatrixMode(gl.GL_PROJECTION)
