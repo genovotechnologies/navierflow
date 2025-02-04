@@ -124,7 +124,7 @@ class FluidSimulationOpenGL:
             raise ValueError(f"Density field must have shape ({self.nx}, {self.ny})")
         self._density = value.astype(np.float32)
 
-    @property
+
     def _create_fire_gradient(self):
         gradient = np.zeros((256, 3), dtype=np.float32)
         for i in range(256):
@@ -175,7 +175,7 @@ class FluidSimulationOpenGL:
             self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], x, y)
             self.last_mouse_pos = self.mouse_pos
 
-    def special_keys(self, key: int):
+    def special_keys(self, key: int, x: int, y: int):
         if key == glut.GLUT_KEY_UP:
             self.params.viscosity *= 1.1
         elif key == glut.GLUT_KEY_DOWN:
@@ -191,40 +191,33 @@ class FluidSimulationOpenGL:
             x1, y1 = int(x1), int(y1)
             x2, y2 = int(x2), int(y2)
 
-            # Calculate direction and distance
             dx, dy = x2 - x1, y2 - y1
             distance = np.sqrt(dx * dx + dy * dy)
 
             if distance > 0:
                 dx, dy = dx / distance, dy / distance
 
-                # Create brush mask
-                brush_radius = max(1, self.params.brush_size)  # Ensure positive radius
+                brush_radius = max(1, self.params.brush_size)
                 y_grid, x_grid = np.ogrid[-brush_radius:brush_radius + 1, -brush_radius:brush_radius + 1]
                 mask = x_grid * x_grid + y_grid * y_grid <= brush_radius * brush_radius
 
-                # Apply along the path
                 steps = max(int(distance), 1)
                 for i in range(steps):
                     cx = int(x1 + dx * i)
                     cy = int(y1 + dy * i)
 
-                    # Calculate valid ranges for the brush
                     x_start = max(0, cx - brush_radius)
                     x_end = min(self.nx, cx + brush_radius + 1)
                     y_start = max(0, cy - brush_radius)
                     y_end = min(self.ny, cy + brush_radius + 1)
 
-                    # Calculate mask indices
                     mask_x_start = max(0, brush_radius - (cx - x_start))
                     mask_x_end = mask_x_start + (x_end - x_start)
                     mask_y_start = max(0, brush_radius - (cy - y_start))
                     mask_y_end = mask_y_start + (y_end - y_start)
 
-                    # Extract relevant part of the mask
                     local_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
 
-                    # Calculate intensity based on distance from center
                     y_coords, x_coords = np.meshgrid(
                         np.arange(y_start, y_end),
                         np.arange(x_start, x_end),
@@ -233,21 +226,19 @@ class FluidSimulationOpenGL:
                     distances = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2)
                     intensity = np.maximum(0, 1.0 - distances / brush_radius)
 
-                    # Apply density
-                    self.density[y_start:y_end, x_start:x_end][local_mask] += (
-                            self.params.density_multiplier * intensity[local_mask]
-                    )
+                    if local_mask.shape == intensity.shape:
+                        self.density[y_start:y_end, x_start:x_end][local_mask] += (
+                                self.params.density_multiplier * intensity[local_mask]
+                        )
 
-                    # Apply temperature
-                    self.temperature[y_start:y_end, x_start:x_end][local_mask] += (
-                            self.params.temperature * intensity[local_mask]
-                    )
+                        self.temperature[y_start:y_end, x_start:x_end][local_mask] += (
+                                self.params.temperature * intensity[local_mask]
+                        )
 
-                    # Apply velocity
-                    velocity_contribution = np.array([dx, dy]) * self.params.velocity_multiplier
-                    self.velocity[y_start:y_end, x_start:x_end][local_mask] += (
-                            velocity_contribution * intensity[local_mask, np.newaxis]
-                    )
+                        velocity_contribution = np.array([dx, dy]) * self.params.velocity_multiplier
+                        self.velocity[y_start:y_end, x_start:x_end][local_mask] += (
+                                velocity_contribution * intensity[local_mask, np.newaxis]
+                        )
 
         except Exception as e:
             print(f"Error in _add_interaction: {str(e)}")
@@ -704,12 +695,8 @@ if __name__ == "__main__":
         ny=args.size,
         method=args.method
     )
-    # Set the parameters from arguments
     sim.params.viscosity = args.viscosity
     sim.params.vorticity = args.vorticity
     sim.params.color_mode = args.color_mode
-    # Initialize all fields
     sim._verify_initialization()
-
-    sim = FluidSimulationOpenGL(nx=args.size, ny=args.size, method=args.method)
     sim.run()
