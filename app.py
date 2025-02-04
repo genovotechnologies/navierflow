@@ -19,6 +19,8 @@ class SimulationParams:
     brush_size: int = 3
     vorticity: float = 0.1
     temperature: float = 0.0
+    ball_radius: float = 10.0
+    ball_interaction_strength: float = 0.5
 
 
 def _create_rainbow_gradient():
@@ -103,6 +105,15 @@ class FluidSimulationOpenGL:
             'total_density': 0.0,
             'avg_temperature': 0.0
         }
+
+        # Enhanced ball/particle attributes
+        self.ball_position = np.array([nx // 2, ny // 2], dtype=np.float32)
+        self.ball_velocity = np.array([0.0, 0.0], dtype=np.float32)
+        self.is_ball_selected = False
+        self.ball_drag_offset = np.array([0.0, 0.0], dtype=np.float32)
+
+        # Color for the ball
+        self.ball_color = [0.8, 0.2, 0.2]  # Reddish color
         self.e = np.array([[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
                            [1, 1], [-1, 1], [-1, -1], [1, -1]], dtype=object)
         self.w = np.array([4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 / 36],
@@ -162,21 +173,55 @@ class FluidSimulationOpenGL:
         glut.glutSpecialFunc(self.special_keys)
 
     def mouse_button(self, button: int, state: int, x: int, y: int):
+        # Convert screen coordinates to grid coordinates
+        grid_x = int((x / 800) * self.nx)
+        grid_y = int(((800 - y) / 800) * self.ny)
+
+        # Check if mouse is near the ball
+        ball_screen_x = int((self.ball_position[0] / self.nx) * 800)
+        ball_screen_y = int(((self.ny - self.ball_position[1]) / self.ny) * 800)
+
+        distance_to_ball = np.sqrt((x - ball_screen_x) ** 2 + (y - ball_screen_y) ** 2)
+
         if button == glut.GLUT_LEFT_BUTTON:
-            self.mouse_down = state == glut.GLUT_DOWN
-            if self.mouse_down:
-                self.last_mouse_pos = (x, y)
+            if state == glut.GLUT_DOWN:
+                # If close to ball, select it
+                if distance_to_ball < self.params.ball_radius * (800 / self.nx):
+                    self.is_ball_selected = True
+                    # Calculate offset to make drag feel natural
+                    self.ball_drag_offset = np.array([grid_x - self.ball_position[0],
+                                                      grid_y - self.ball_position[1]])
+                else:
+                    # Normal mouse interaction for fluid
+                    self.mouse_down = True
+                    self.last_mouse_pos = (grid_x, grid_y)
+            else:
+                # Release ball or mouse
+                self.is_ball_selected = False
+                self.mouse_down = False
 
     def mouse_motion(self, x: int, y: int):
-        if self.mouse_down:
-            x = int((x / 800) * self.nx)
-            y = int(((800 - y) / 800) * self.ny)
-            self.mouse_pos = (x, y)
-            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], x, y)
-            self.last_mouse_pos = self.mouse_pos
+        # Convert screen coordinates to grid coordinates
+        grid_x = int((x / 800) * self.nx)
+        grid_y = int(((800 - y) / 800) * self.ny)
+
+        if self.is_ball_selected:
+            # Move the ball, accounting for the drag offset
+            self.ball_position = np.array([grid_x - self.ball_drag_offset[0],
+                                           grid_y - self.ball_drag_offset[1]])
+        elif self.mouse_down:
+            # Normal fluid interaction
+            self._add_interaction(self.last_mouse_pos[0], self.last_mouse_pos[1], grid_x, grid_y)
+            self.last_mouse_pos = (grid_x, grid_y)
 
     def special_keys(self, key: int, x: int, y: int):
-        if key == glut.GLUT_KEY_UP:
+        if key == glut.GLUT_KEY_PAGE_UP:
+            # Increase ball size
+            self.params.ball_radius = min(30, self.params.ball_radius + 1)
+        elif key == glut.GLUT_KEY_PAGE_DOWN:
+            # Decrease ball size
+            self.params.ball_radius = max(5, self.params.ball_radius - 1)
+        elif key == glut.GLUT_KEY_UP:
             self.params.viscosity *= 1.1
         elif key == glut.GLUT_KEY_DOWN:
             self.params.viscosity *= 0.9
@@ -390,7 +435,16 @@ class FluidSimulationOpenGL:
         """Enhanced keyboard controls"""
         try:
             key = key.lower()
-            if key == b'm':
+
+            if key == b'+':
+                # Increase ball interaction strength
+                self.params.ball_interaction_strength = min(2.0,
+                                                            self.params.ball_interaction_strength + 0.1)
+            elif key == b'-':
+                # Decrease ball interaction strength
+                self.params.ball_interaction_strength = max(0.0,
+                                                            self.params.ball_interaction_strength - 0.1)
+            elif key == b'm':
                 self.method = 'lbm' if self.method == 'eulerian' else 'eulerian'
                 print(f"Switched to {self.method} method")
             elif key == b'r':
@@ -424,6 +478,10 @@ class FluidSimulationOpenGL:
         print("t: Toggle temperature effect")
         print("v: Toggle vorticity confinement")
         print("Arrow keys: Adjust brush size and viscosity")
+        print("\nBall/Particle Controls:")
+        print("Click and drag ball to move")
+        print("Page Up/Down: Resize ball")
+        print("+/-: Adjust ball interaction strength")
         print("h: Show this help message")
         print(f"Current FPS: {getattr(self, 'fps', 0):.1f}")
 
@@ -545,51 +603,101 @@ class FluidSimulationOpenGL:
         self.f = f_boundary
 
     def render(self):
-        """Enhanced rendering with statistics overlay"""
-        self._verify_initialization()
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        """Enhanced rendering with robust OpenGL state management"""
+        try:
+            # Clear the color buffer
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-        # Enhanced visualization
-        self.density = self._diffuse(self.density, self.params.diffusion_rate, self.params.dt)
-        enhanced_density = np.clip(self.density * 4.0, 0, 1)
-        normalized_density = (enhanced_density * 255).astype(int)
+            # Save the current matrix mode and matrix
+            gl.glMatrixMode(gl.GL_PROJECTION)
+            gl.glPushMatrix()
+            gl.glLoadIdentity()
+            gl.glOrtho(-1, 1, -1, 1, -1, 1)
 
-        # Add temperature and vorticity effects to visualization
-        color_density = self.color_gradient[normalized_density].copy()
+            gl.glMatrixMode(gl.GL_MODELVIEW)
+            gl.glPushMatrix()
+            gl.glLoadIdentity()
 
-        # Add temperature effect (red tint)
-        temp_mask = self.temperature > 0
-        color_density[temp_mask] += np.array([0.3, 0.0, 0.0]) * self.temperature[temp_mask, np.newaxis]
+            # Enhanced visualization
+            self.density = self._diffuse(self.density, self.params.diffusion_rate, self.params.dt)
+            enhanced_density = np.clip(self.density * 4.0, 0, 1)
+            normalized_density = (enhanced_density * 255).astype(int)
 
-        # Add vorticity effect (swirl highlights)
-        vorticity_magnitude = np.abs(self.vorticity)
-        normalized_vorticity = vorticity_magnitude / (np.max(vorticity_magnitude) + 1e-6)
-        color_density += np.array([0.1, 0.1, 0.2]) * normalized_vorticity[..., np.newaxis]
+            # Add temperature and vorticity effects to visualization
+            color_density = self.color_gradient[normalized_density].copy()
 
-        # Ensure colors stay in valid range
-        color_density = np.clip(color_density, 0, 1)
+            # Add temperature effect (red tint)
+            temp_mask = self.temperature > 0
+            color_density[temp_mask] += np.array([0.3, 0.0, 0.0]) * self.temperature[temp_mask, np.newaxis]
 
-        # Generate mipmaps for better quality
-        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, self.nx, self.ny, 0,
-                        gl.GL_RGB, gl.GL_FLOAT, color_density)
-        gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+            # Add vorticity effect (swirl highlights)
+            vorticity_magnitude = np.abs(self.vorticity)
+            normalized_vorticity = vorticity_magnitude / (np.max(vorticity_magnitude) + 1e-6)
+            color_density += np.array([0.1, 0.1, 0.2]) * normalized_vorticity[..., np.newaxis]
 
-        # Draw textured quad
-        gl.glBegin(gl.GL_QUADS)
-        gl.glTexCoord2f(0, 0)
-        gl.glVertex2f(-1, -1)
-        gl.glTexCoord2f(1, 0)
-        gl.glVertex2f(1, -1)
-        gl.glTexCoord2f(1, 1)
-        gl.glVertex2f(1, 1)
-        gl.glTexCoord2f(0, 1)
-        gl.glVertex2f(-1, 1)
-        gl.glEnd()
+            # Ensure colors stay in valid range
+            color_density = np.clip(color_density, 0, 1)
 
-        # Render statistics overlay
-        self._render_stats()
+            # Bind texture and generate mipmaps
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, self.nx, self.ny, 0,
+                            gl.GL_RGB, gl.GL_FLOAT, color_density)
+            gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
 
-        glut.glutSwapBuffers()
+            # Draw textured quad with explicit error checking
+            gl.glEnable(gl.GL_TEXTURE_2D)
+            gl.glBegin(gl.GL_QUADS)
+            try:
+                gl.glTexCoord2f(0, 0)
+                gl.glVertex2f(-1, -1)
+                gl.glTexCoord2f(1, 0)
+                gl.glVertex2f(1, -1)
+                gl.glTexCoord2f(1, 1)
+                gl.glVertex2f(1, 1)
+                gl.glTexCoord2f(0, 1)
+                gl.glVertex2f(-1, 1)
+            finally:
+                gl.glEnd()
+
+            # Draw the ball
+            gl.glDisable(gl.GL_TEXTURE_2D)
+            gl.glColor3f(*self.ball_color)
+            gl.glBegin(gl.GL_TRIANGLE_FAN)
+
+            # Convert ball position to screen coordinates
+            ball_screen_x = (self.ball_position[0] / self.nx) * 2 - 1
+            ball_screen_y = (self.ball_position[1] / self.ny) * 2 - 1
+            ball_screen_radius = self.params.ball_radius * (2 / self.nx)
+
+            gl.glVertex2f(ball_screen_x, ball_screen_y)
+            num_segments = 32
+            for i in range(num_segments + 1):
+                theta = 2.0 * 3.1415926 * i / num_segments
+                x = ball_screen_x + ball_screen_radius * np.cos(theta)
+                y = ball_screen_y + ball_screen_radius * np.sin(theta)
+                gl.glVertex2f(x, y)
+
+            gl.glEnd()
+
+            # Render statistics overlay
+            self._render_stats()
+
+            # Restore matrices
+            gl.glMatrixMode(gl.GL_MODELVIEW)
+            gl.glPopMatrix()
+            gl.glMatrixMode(gl.GL_PROJECTION)
+            gl.glPopMatrix()
+
+            # Swap buffers
+            glut.glutSwapBuffers()
+
+        except Exception as e:
+            print(f"Rendering error: {e}")
+            # Attempt to reset OpenGL state
+            gl.glMatrixMode(gl.GL_MODELVIEW)
+            gl.glLoadIdentity()
+            gl.glMatrixMode(gl.GL_PROJECTION)
+            gl.glLoadIdentity()
 
     def _render_stats(self):
         """Render simulation statistics overlay"""
@@ -624,35 +732,71 @@ class FluidSimulationOpenGL:
         gl.glMatrixMode(gl.GL_MODELVIEW)
 
     def _update_ball(self):
-        """Update position and velocity of the ball (particle) in the simulation"""
-        # Calculate forces from the velocity field
+        """Enhanced ball update with more fluid interaction"""
         ball_x, ball_y = map(int, self.ball_position)
 
         # Ensure the ball is within the grid bounds
         ball_x = max(0, min(ball_x, self.nx - 1))
         ball_y = max(0, min(ball_y, self.ny - 1))
 
-        # Get local velocity
+        # Calculate the ball's influence on the velocity field
+        ball_radius = int(self.params.ball_radius)
+        y_grid, x_grid = np.ogrid[-ball_radius:ball_radius + 1, -ball_radius:ball_radius + 1]
+        mask = x_grid * x_grid + y_grid * y_grid <= ball_radius * ball_radius
+
+        # Calculate local velocity and influence
         local_velocity = self.velocity[ball_x, ball_y]
 
-        # Update ball velocity with some damping
-        self.ball_velocity += local_velocity * 0.5
+        # Apply velocity field interaction
+        interaction_strength = self.params.ball_interaction_strength
 
-        # Apply damping to prevent excessive velocity
-        damping = 0.95
-        self.ball_velocity *= damping
+        # Create a region around the ball
+        x_start = max(0, ball_x - ball_radius)
+        x_end = min(self.nx, ball_x + ball_radius + 1)
+        y_start = max(0, ball_y - ball_radius)
+        y_end = min(self.ny, ball_y + ball_radius + 1)
+
+        # Adjust mask for boundary cases
+        mask_x_start = max(0, ball_radius - (ball_x - x_start))
+        mask_x_end = mask_x_start + (x_end - x_start)
+        mask_y_start = max(0, ball_radius - (ball_y - y_start))
+        mask_y_end = mask_y_start + (y_end - y_start)
+
+        local_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
+
+        # Calculate distances from ball center
+        y_coords, x_coords = np.meshgrid(
+            np.arange(y_start, y_end),
+            np.arange(x_start, x_end),
+            indexing='ij'
+        )
+        distances = np.sqrt((x_coords - ball_x) ** 2 + (y_coords - ball_y) ** 2)
+
+        # Create a smoothing intensity based on distance
+        intensity = np.maximum(0, 1.0 - distances / ball_radius)
+
+        # Modify velocity around the ball
+        if local_mask.shape == intensity.shape:
+            # Influence velocity field
+            self.velocity[y_start:y_end, x_start:x_end][local_mask] += (
+                    local_velocity * interaction_strength * intensity[local_mask, np.newaxis]
+            )
+
+        # Update ball velocity with some damping
+        self.ball_velocity += local_velocity * interaction_strength
+        self.ball_velocity *= 0.95  # Damping
 
         # Update ball position
         self.ball_position += self.ball_velocity * self.params.dt
 
-        # Boundary conditions - bounce off walls
-        if (self.ball_position[0] < self.ball_radius or
-                self.ball_position[0] > self.nx - self.ball_radius):
-            self.ball_velocity[0] *= -1
+        # Boundary conditions - bounce off walls with energy loss
+        if (self.ball_position[0] < ball_radius or
+                self.ball_position[0] > self.nx - ball_radius):
+            self.ball_velocity[0] *= -0.8  # Energy loss on bounce
 
-        if (self.ball_position[1] < self.ball_radius or
-                self.ball_position[1] > self.ny - self.ball_radius):
-            self.ball_velocity[1] *= -1
+        if (self.ball_position[1] < ball_radius or
+                self.ball_position[1] > self.ny - ball_radius):
+            self.ball_velocity[1] *= -0.8  # Energy loss on bounce
 
     def _verify_initialization(self):
         """Verify that all required attributes are properly initialized"""
