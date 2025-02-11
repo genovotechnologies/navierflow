@@ -87,6 +87,43 @@ def _create_blue_gradient():
     return gradient
 
 
+class SimulationMethodSelector:
+    def __init__(self):
+        self.window_id = None
+        self.selected_method = None
+
+    def create_selection_window(self):
+        glut.glutInit()
+        glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGB)
+        glut.glutInitWindowSize(400, 300)
+        glut.glutInitWindowPosition(200, 200)
+        self.window_id = glut.glutCreateWindow(b"Select Simulation Method")
+
+        gl.glClearColor(1.0, 1.0, 1.0, 1.0)  # White background
+
+        # Register callbacks
+        glut.glutDisplayFunc(self.draw_selection_screen)
+        glut.glutMouseFunc(self.handle_mouse_click)
+
+        glut.glutMainLoop()
+
+    def draw_selection_screen(self):
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        gl.glColor3f(0.0, 0.0, 0.0)  # Black text
+
+        # Draw buttons
+        self.draw_button(-0.5, 0.2, "Eulerian Method")
+        self.draw_button(-0.5, -0.2, "Lattice Boltzmann Method")
+
+        glut.glutSwapBuffers()
+
+    def draw_button(self, x, y, text):
+        # Draw button rectangle and text
+        gl.glBegin(gl.GL_QUADS)
+        # ... (button drawing code)
+        gl.glEnd()
+        self.render_text(x, y, text)
+
 class FluidSimulationOpenGL:
     def __init__(self, nx: int = 128, ny: int = 128, method: str = 'eulerian'):
         self.params = SimulationParams()
@@ -127,6 +164,10 @@ class FluidSimulationOpenGL:
         self.mouse_pos = (0, 0)
         self.last_mouse_pos = (0, 0)
 
+        self.visualization_mode = 'fluid'  # 'fluid', 'pressure', 'velocity'
+        self.show_controls = False
+        self.use_ball = False  # Only true for LBM method
+
         # Call this method to set up color gradient
         self._setup_color_gradient()
 
@@ -166,6 +207,22 @@ class FluidSimulationOpenGL:
             raise ValueError(f"Density field must have shape ({self.nx}, {self.ny})")
         self._density = value.astype(np.float32)
 
+    def toggle_visualization_mode(self):
+        modes = ['fluid', 'pressure', 'velocity']
+        current_idx = modes.index(self.visualization_mode)
+        self.visualization_mode = modes[(current_idx + 1) % len(modes)]
+
+    def handle_visualization_render(self):
+        if self.method == 'eulerian':
+            if self.visualization_mode == 'pressure':
+                # Render pressure field
+                self.render_pressure_field()
+            elif self.visualization_mode == 'velocity':
+                # Render velocity field
+                self.render_velocity_field()
+            else:
+                # Regular fluid rendering
+                self.render_fluid()
 
     def _create_fire_gradient(self):
         gradient = np.zeros((256, 3), dtype=np.float32)
@@ -176,6 +233,43 @@ class FluidSimulationOpenGL:
 
     def _setup_color_gradient(self):
         self.color_gradient = self.color_schemes[self.params.color_mode]()
+
+    def draw_controls_dialog(self):
+        if not hasattr(self, 'show_controls') or not self.show_controls:
+            return
+
+        # Save current matrices
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glPushMatrix()
+        gl.glLoadIdentity()
+        gl.glOrtho(0, self.window_width, 0, self.window_height, -1, 1)
+
+        gl.glMatrixMode(gl.GL_MODELVIEW)
+        gl.glPushMatrix()
+        gl.glLoadIdentity()
+
+        # Draw semi-transparent background
+        gl.glEnable(gl.GL_BLEND)
+        gl.glColor4f(0.0, 0.0, 0.0, 0.7)
+        gl.glBegin(gl.GL_QUADS)
+        # ... (dialog background drawing)
+        gl.glEnd()
+
+        # Draw controls text
+        gl.glColor3f(1.0, 1.0, 1.0)
+        controls = [
+            "Controls:",
+            "Mouse drag: Add fluid",
+            "C: Toggle controls",
+            "V: Toggle visualization mode",
+            "R: Reset simulation",
+            "ESC: Exit"
+        ]
+
+        y = self.window_height - 50
+        for text in controls:
+            self.render_text(50, y, text)
+            y -= 30
 
     def initialize_opengl(self):
         glut.glutInit()
@@ -547,6 +641,10 @@ class FluidSimulationOpenGL:
                 self._print_help()
             elif key == b'\x1b':  # ESC key
                 self.handle_escape()
+            elif key == b'c':
+                self.show_controls = not self.show_controls
+            elif key == b'v' and self.method == 'eulerian':
+                self.toggle_visualization_mode()
         except Exception as e:
             print(f"Error in keyboard handler: {str(e)}")
 
@@ -713,85 +811,95 @@ class FluidSimulationOpenGL:
         self.f = f_boundary
 
     def render(self):
-        """Enhanced rendering with statistics overlay"""
-        self._verify_initialization()
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+
+        if self.method == 'lbm':
+            # Set white background
+            gl.glClearColor(1.0, 1.0, 1.0, 1.0)
+
+            # Modify color calculation for grey smoke
+            enhanced_density = np.clip(self.density * 4.0, 0, 1)
+            color_density = np.ones((self.nx, self.ny, 3)) * (1.0 - enhanced_density)[..., np.newaxis]
+
+        else:
+            """Enhanced rendering with statistics overlay"""
+            self._verify_initialization()
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
         # Save current matrices
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        gl.glOrtho(-1, 1, -1, 1, -1, 1)
+            gl.glMatrixMode(gl.GL_PROJECTION)
+            gl.glLoadIdentity()
+            gl.glOrtho(-1, 1, -1, 1, -1, 1)
 
-        gl.glMatrixMode(gl.GL_MODELVIEW)
-        gl.glLoadIdentity()
+            gl.glMatrixMode(gl.GL_MODELVIEW)
+            gl.glLoadIdentity()
 
         # Enhanced visualization
-        self.density = self._diffuse(self.density, self.params.diffusion_rate, self.params.dt)
-        enhanced_density = np.clip(self.density * 4.0, 0, 1)
-        normalized_density = (enhanced_density * 255).astype(int)
+            self.density = self._diffuse(self.density, self.params.diffusion_rate, self.params.dt)
+            enhanced_density = np.clip(self.density * 4.0, 0, 1)
+            normalized_density = (enhanced_density * 255).astype(int)
 
         # Add temperature and vorticity effects to visualization
-        color_density = self.color_gradient[normalized_density].copy()
+            color_density = self.color_gradient[normalized_density].copy()
 
         # Add temperature effect (red tint)
-        temp_mask = self.temperature > 0
-        color_density[temp_mask] += np.array([0.3, 0.0, 0.0]) * self.temperature[temp_mask, np.newaxis]
+            temp_mask = self.temperature > 0
+            color_density[temp_mask] += np.array([0.3, 0.0, 0.0]) * self.temperature[temp_mask, np.newaxis]
 
         # Add vorticity effect (swirl highlights)
-        vorticity_magnitude = np.abs(self.vorticity)
-        normalized_vorticity = vorticity_magnitude / (np.max(vorticity_magnitude) + 1e-6)
-        color_density += np.array([0.1, 0.1, 0.2]) * normalized_vorticity[..., np.newaxis]
+            vorticity_magnitude = np.abs(self.vorticity)
+            normalized_vorticity = vorticity_magnitude / (np.max(vorticity_magnitude) + 1e-6)
+            color_density += np.array([0.1, 0.1, 0.2]) * normalized_vorticity[..., np.newaxis]
 
         # Ensure colors stay in valid range
-        color_density = np.clip(color_density, 0, 1)
+            color_density = np.clip(color_density, 0, 1)
 
         # Enable texturing
-        gl.glEnable(gl.GL_TEXTURE_2D)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
+            gl.glEnable(gl.GL_TEXTURE_2D)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
 
         # Generate mipmaps for better quality
-        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, self.nx, self.ny, 0,
-                        gl.GL_RGB, gl.GL_FLOAT, color_density)
-        gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, self.nx, self.ny, 0,
+                            gl.GL_RGB, gl.GL_FLOAT, color_density)
+            gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
 
         # Draw textured quad
-        gl.glBegin(gl.GL_QUADS)
-        gl.glTexCoord2f(0, 0)
-        gl.glVertex2f(-1, -1)
-        gl.glTexCoord2f(1, 0)
-        gl.glVertex2f(1, -1)
-        gl.glTexCoord2f(1, 1)
-        gl.glVertex2f(1, 1)
-        gl.glTexCoord2f(0, 1)
-        gl.glVertex2f(-1, 1)
-        gl.glEnd()
+            gl.glBegin(gl.GL_QUADS)
+            gl.glTexCoord2f(0, 0)
+            gl.glVertex2f(-1, -1)
+            gl.glTexCoord2f(1, 0)
+            gl.glVertex2f(1, -1)
+            gl.glTexCoord2f(1, 1)
+            gl.glVertex2f(1, 1)
+            gl.glTexCoord2f(0, 1)
+            gl.glVertex2f(-1, 1)
+            gl.glEnd()
 
         # Draw the ball
-        gl.glDisable(gl.GL_TEXTURE_2D)
-        gl.glColor3f(1.0, 1.0, 1.0)  # White color for the ball
+            gl.glDisable(gl.GL_TEXTURE_2D)
+            gl.glColor3f(1.0, 1.0, 1.0)  # White color for the ball
 
         # Convert ball position to GL coordinates (-1 to 1)
-        ball_x = (self.ball_position[0] / self.nx) * 2 - 1
-        ball_y = (self.ball_position[1] / self.ny) * 2 - 1
-        radius = (self.ball_radius / self.nx) * 2  # Convert radius to GL coordinates
+            ball_x = (self.ball_position[0] / self.nx) * 2 - 1
+            ball_y = (self.ball_position[1] / self.ny) * 2 - 1
+            radius = (self.ball_radius / self.nx) * 2  # Convert radius to GL coordinates
 
         # Draw circle
-        gl.glBegin(gl.GL_TRIANGLE_FAN)
-        gl.glVertex2f(ball_x, ball_y)  # Center point
+            gl.glBegin(gl.GL_TRIANGLE_FAN)
+            gl.glVertex2f(ball_x, ball_y)  # Center point
 
         # Draw circle points
-        segments = 32
-        for i in range(segments + 1):
-            angle = 2.0 * np.pi * i / segments
-            x = ball_x + radius * np.cos(angle)
-            y = ball_y + radius * np.sin(angle)
-            gl.glVertex2f(x, y)
-        gl.glEnd()
+            segments = 32
+            for i in range(segments + 1):
+                angle = 2.0 * np.pi * i / segments
+                x = ball_x + radius * np.cos(angle)
+                y = ball_y + radius * np.sin(angle)
+                gl.glVertex2f(x, y)
+            gl.glEnd()
 
         # Render stats with separate matrix stack
-        self._render_stats()
+            self._render_stats()
 
-        glut.glutSwapBuffers()
+            glut.glutSwapBuffers()
 
     def _render_stats(self):
         """Render simulation statistics overlay"""
@@ -970,15 +1078,47 @@ if __name__ == "__main__":
                         help='Fluid viscosity')
     parser.add_argument('--vorticity', type=float, default=0.1,
                         help='Vorticity confinement strength')
+    parser.add_argument('--visualization-mode', type=str, default='fluid',
+                        choices=['fluid', 'pressure', 'velocity', 'smoke'],
+                        help='Initial visualization mode')
+    parser.add_argument('--show-controls', action='store_true',
+                        help='Show controls on startup')
+
+    parser.add_argument('--pressure-iterations', type=int, default=20,
+                        help='Number of pressure solving iterations (Eulerian)')
+    parser.add_argument('--tau', type=float, default=0.6,
+                        help='Relaxation time (LBM)')
+    parser.add_argument('--lattice-speed', type=float, default=1.0,
+                        help='Lattice speed (LBM)')
+
     args = parser.parse_args()
 
+    # Show method selector if not specified
+    if not args.method:
+        selector = MethodSelector()
+        method = selector.create_window()
+    else:
+        method = args.method
+
+    # Create simulation with updated parameters
     sim = FluidSimulationOpenGL(
         nx=args.size,
         ny=args.size,
-        method=args.method
+        method=method
     )
+
+    # Update method-specific parameters
     sim.params.viscosity = args.viscosity
     sim.params.vorticity = args.vorticity
     sim.params.color_mode = args.color_mode
+    sim.params.visualization_mode = args.visualization_mode
+    sim.params.show_controls = args.show_controls
+
+    if method == 'eulerian':
+        sim.params.pressure_iterations = args.pressure_iterations
+    else:  # LBM
+        sim.params.tau = args.tau
+        sim.params.lattice_speed = args.lattice_speed
+
     sim._verify_initialization()
     sim.run()
