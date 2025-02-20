@@ -355,13 +355,96 @@ class FluidSimulation:
                     self.temperature[x, y] += intensity * 0.1
 
     def step(self):
-        self.compute_vorticity()
-        self.apply_vorticity_confinement()
-        self.diffuse(self.velocity, self.params.viscosity)
+        if self.method == 'eulerian':
+            self.step_euler()
+        else:
+            # Original LBM method
+            self.compute_vorticity()
+            self.apply_vorticity_confinement()
+            self.diffuse(self.velocity, self.params.viscosity)
+            self.project()
+            self.advect()
+            self.project()
+            self.diffuse(self.density, 0.05)
+
+    @ti.kernel
+    def advect_euler(self, field: ti.template(), dt: float):
+        """Advect field using Euler method"""
+        for i, j in field:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                # Back-trace the particle position
+                pos = ti.Vector([float(i), float(j)])
+                vel = self.velocity[i, j]
+                pos -= vel * dt
+
+                # Ensure position stays within bounds
+                pos[0] = ti.min(ti.max(pos[0], 0.5), self.nx - 1.5)
+                pos[1] = ti.min(ti.max(pos[1], 0.5), self.ny - 1.5)
+
+                # Bilinear interpolation
+                i0 = int(pos[0])
+                j0 = int(pos[1])
+                i1 = i0 + 1
+                j1 = j0 + 1
+
+                s1 = pos[0] - i0
+                t1 = pos[1] - j0
+                s0 = 1.0 - s1
+                t0 = 1.0 - t1
+
+                # Update field using interpolated values
+                field[i, j] = (
+                        s0 * (t0 * field[i0, j0] + t1 * field[i0, j1]) +
+                        s1 * (t0 * field[i1, j0] + t1 * field[i1, j1])
+                )
+
+    @ti.kernel
+    def diffuse_euler(self, field: ti.template(), diff: float):
+        """Apply diffusion using Gauss-Seidel relaxation"""
+        a = self.params.dt * diff * (self.nx - 2) * (self.ny - 2)
+        for k in range(20):  # Gauss-Seidel iterations
+            for i, j in field:
+                if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                    field[i, j] = (field[i, j] + a * (
+                            field[i + 1, j] + field[i - 1, j] +
+                            field[i, j + 1] + field[i, j - 1]
+                    )) / (1.0 + 4.0 * a)
+
+    def step_euler(self):
+        """Main Eulerian step function"""
+        # 1. Diffusion
+        self.diffuse_euler(self.velocity, self.params.viscosity)
+
+        # 2. Project after diffusion
         self.project()
-        self.advect()
+
+        # 3. Advection
+        self.advect_euler(self.velocity, self.params.dt)
+        self.advect_euler(self.density, self.params.dt)
+
+        # 4. Project after advection
         self.project()
-        self.diffuse(self.density, 0.05)
+
+        # 5. Apply forces
+        self.apply_forces()
+
+    @ti.kernel
+    def apply_forces(self):
+        """Apply external forces and effects"""
+        for i, j in self.velocity:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                # Buoyancy force
+                buoyancy = self.temperature[i, j] * self.params.buoyancy
+                self.velocity[i, j][1] += buoyancy * self.params.dt
+
+                # Vorticity confinement
+                if self.params.vorticity > 0:
+                    curl = self.vorticity[i, j]
+                    force = ti.Vector([
+                        self.params.vorticity * curl * (self.velocity[i, j + 1][1] - self.velocity[i, j - 1][1]),
+                        -self.params.vorticity * curl * (self.velocity[i + 1, j][0] - self.velocity[i - 1, j][0])
+                    ])
+                    self.velocity[i, j] += force * self.params.dt
 
 
     def add_density_velocity(self, x, y, dx=0, dy=0):
