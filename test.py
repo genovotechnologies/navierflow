@@ -176,15 +176,90 @@ class FluidSimulation:
                         self.velocity[i, j + 1][1] - self.velocity[i, j - 1][1]
                 )
 
+    @ti.kernel
+    def solve_pressure_poisson(self):
+        # Initialize pressure field
+        for i, j in self.pressure:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                self.pressure[i, j] = 0.0
+
+        # Jacobi iteration for pressure Poisson equation
+        for _ in range(50):  # Increased iterations for better convergence
+            for i, j in self.pressure:
+                if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                    self.pressure[i, j] = (
+                            (self.pressure[i + 1, j] + self.pressure[i - 1, j] +
+                             self.pressure[i, j + 1] + self.pressure[i, j - 1] -
+                             self.divergence[i, j]) / 4.0
+                    )
+
+    @ti.kernel
+    def apply_pressure_gradient(self):
+        for i, j in self.velocity:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                self.velocity[i, j][0] -= 0.5 * (self.pressure[i + 1, j] - self.pressure[i - 1, j])
+                self.velocity[i, j][1] -= 0.5 * (self.pressure[i, j + 1] - self.pressure[i, j - 1])
 
     def project(self):
-        # Split the projection step into separate kernel calls
         self.compute_divergence()
+        self.solve_pressure_poisson()
+        self.apply_pressure_gradient()
 
-        # Solve pressure Poisson equation
+    @ti.kernel
+    def eulerian_step(self):
+        # Store previous velocity for semi-Lagrangian advection
+        for i, j in self.velocity:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                # Apply external forces (gravity, buoyancy)
+                gravity = -9.81 * self.params.dt
+                buoyancy = self.temperature[i, j] * self.params.buoyancy * self.params.dt
+                self.velocity[i, j][1] += gravity + buoyancy
 
+                # Apply vorticity confinement
+                if self.params.vorticity > 0:
+                    vort = self.vorticity[i, j]
+                    vort_grad_x = (self.vorticity[i + 1, j] - self.vorticity[i - 1, j]) * 0.5
+                    vort_grad_y = (self.vorticity[i, j + 1] - self.vorticity[i, j - 1]) * 0.5
 
-        # Apply pressure gradient
+                    # Normalize vorticity gradient
+                    length = ti.sqrt(vort_grad_x * vort_grad_x + vort_grad_y * vort_grad_y) + 1e-10
+                    vort_grad_x /= length
+                    vort_grad_y /= length
+
+                    # Apply vorticity force
+                    self.velocity[i, j][0] += self.params.vorticity * vort * vort_grad_y * self.params.dt
+                    self.velocity[i, j][1] -= self.params.vorticity * vort * vort_grad_x * self.params.dt
+
+    def step(self):
+        if self.method == 'eulerian':
+            # 1. External forces and vorticity
+            self.eulerian_step()
+
+            # 2. Viscous diffusion
+            self.diffuse(self.velocity, self.params.viscosity)
+
+            # 3. Projection for incompressibility
+            self.project()
+
+            # 4. Advection
+            self.advect()
+
+            # 5. Final projection
+            self.project()
+
+            # 6. Temperature and density diffusion
+            self.diffuse(self.temperature, self.params.diffusion_rate)
+            self.diffuse(self.density, self.params.diffusion_rate)
+
+            # 7. Update smoke effects
+            self.apply_smoke_effect()
+
+        elif self.method == 'lbm':
+            # Existing LBM implementation
+            self.lbm_stream_collide()
+            self.compute_vorticity()
+            self.apply_vorticity_confinement()
+            self.apply_temperature_buoyancy()
 
 
     @ti.kernel
@@ -305,14 +380,6 @@ class FluidSimulation:
                     self.density[x, y] += intensity * 0.1
                     self.temperature[x, y] += intensity * 0.1
 
-    def step(self):
-        self.compute_vorticity()
-        self.apply_vorticity_confinement()
-        self.diffuse(self.velocity, self.params.viscosity)
-        self.project()
-        self.advect()
-        self.project()
-        self.diffuse(self.density, 0.05)
 
     def add_density_velocity(self, x, y, dx=0, dy=0):
         radius = self.params.brush_size
@@ -431,11 +498,6 @@ class FluidSimulation:
                 self.params.temperature = gui.slider_float("Temperature", self.params.temperature, 0.0, 2.0)
                 self.params.buoyancy = gui.slider_float("Buoyancy", self.params.buoyancy, 0.0, 3.0)
 
-                # Smoke effects
-                gui.text("\nSmoke Parameters")
-                self.params.smoke_rise_speed = gui.slider_float("Smoke Rise", self.params.smoke_rise_speed, 0.0, 2.0)
-                self.params.density_multiplier = gui.slider_float("Smoke Density", self.params.density_multiplier, 1.0,
-                                                                  10.0)
 
                 # Interaction controls
                 gui.text("\nInteraction")
@@ -484,13 +546,11 @@ def create_splash_screen():
             viscosity=0.05,
             temperature=0.8,
             buoyancy=1.5,
-            smoke_rise_speed=1.0
         ),
         'water': SimulationParams(
             viscosity=0.2,
             temperature=0.1,
             buoyancy=0.3,
-            smoke_rise_speed=0.1
         )
     }
 
