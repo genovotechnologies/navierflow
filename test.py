@@ -19,16 +19,7 @@ class SimulationParams:
     vorticity: float = 0.3
     temperature: float = 0.5
     buoyancy: float = 1.0
-    num_particles: int = 1000000
-    particle_life: float = 10
-    ball_radius: int = 20
-    ball_interaction_strength: float = 2.0
-    smoke_rise_speed: float = 0.5
-    ball_drag: float = 0.1  # New parameter for ball drag
-    ball_mass: float = 5.0  # New parameter for ball mass
-    trail_length: int = 20
-    ball_pos: tuple = (0.0, 0.0)
-    trail_opacity: float = 0.3
+    num_particles: int = 10000
     particle_speed_multiplier: float = 1.0
     color_scheme: str = 'velocity'  # Options: 'temperature', 'velocity', 'density'
 
@@ -114,10 +105,6 @@ class FluidSimulation:
         self.smoke_density = ti.field(dtype=ti.f32, shape=(nx, ny))
         self.prev_smoke_density = ti.field(dtype=ti.f32, shape=(nx, ny))
 
-        # Initialize ball-related fields regardless of method
-        self.ball_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
-        self.ball_vel = ti.Vector.field(2, dtype=ti.f32, shape=())
-        self.ball_force = ti.Vector.field(2, dtype=ti.f32, shape=())
 
         # Mouse interaction
         self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
@@ -261,42 +248,6 @@ class FluidSimulation:
                 buoyant_force = self.temperature[i, j] * self.params.buoyancy
                 self.velocity[i, j][1] += buoyant_force * self.params.dt
 
-    @ti.kernel
-    def render_with_trails(self, pixels: ti.types.ndarray()):
-        # Clear buffer with background color
-        for i, j in ti.ndrange(self.nx, self.ny):
-            pixels[i, j, 0] = 1.0
-            pixels[i, j, 1] = 1.0
-            pixels[i, j, 2] = 1.0
-            pixels[i, j, 3] = 1.0  # Alpha channel
-
-        # Render fluid density
-        for i, j in self.density:
-            density_val = self.density[i, j]
-            temperature_val = self.temperature[i, j]
-
-            # Color mapping based on temperature
-            r = ti.min(1.0, temperature_val * 2.0)
-            g = ti.max(0.0, 1.0 - abs(temperature_val - 0.5) * 2.0)
-            b = ti.max(0.0, 1.0 - temperature_val * 2.0)
-
-            # Blend with existing color
-            alpha = density_val * 0.5
-            pixels[i, j, 0] = pixels[i, j, 0] * (1 - alpha) + r * alpha
-            pixels[i, j, 1] = pixels[i, j, 1] * (1 - alpha) + g * alpha
-            pixels[i, j, 2] = pixels[i, j, 2] * (1 - alpha) + b * alpha
-
-        # Render particle trails
-        for i, j in ti.ndrange(self.particles.num_particles, self.particles.trail_length):
-            pos = self.particles.positions[i, j]
-            alpha = self.particles.trail_alphas[i, j] * 0.3
-
-            x, y = int(pos[0]), int(pos[1])
-            if 0 <= x < self.nx and 0 <= y < self.ny:
-                # Blend trail with existing color
-                pixels[x, y, 0] = pixels[x, y, 0] * (1 - alpha) + 0.8 * alpha
-                pixels[x, y, 1] = pixels[x, y, 1] * (1 - alpha) + 0.9 * alpha
-                pixels[x, y, 2] = pixels[x, y, 2] * (1 - alpha) + 1.0 * alpha
 
     # 3. Enhanced LBM Implementation
     @ti.kernel
@@ -355,97 +306,13 @@ class FluidSimulation:
                     self.temperature[x, y] += intensity * 0.1
 
     def step(self):
-        if self.method == 'eulerian':
-            self.step_euler()
-        else:
-            # Original LBM method
-            self.compute_vorticity()
-            self.apply_vorticity_confinement()
-            self.diffuse(self.velocity, self.params.viscosity)
-            self.project()
-            self.advect()
-            self.project()
-            self.diffuse(self.density, 0.05)
-
-    @ti.kernel
-    def advect_euler(self, field: ti.template(), dt: float):
-        """Advect field using Euler method"""
-        for i, j in field:
-            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                # Back-trace the particle position
-                pos = ti.Vector([float(i), float(j)])
-                vel = self.velocity[i, j]
-                pos -= vel * dt
-
-                # Ensure position stays within bounds
-                pos[0] = ti.min(ti.max(pos[0], 0.5), self.nx - 1.5)
-                pos[1] = ti.min(ti.max(pos[1], 0.5), self.ny - 1.5)
-
-                # Bilinear interpolation
-                i0 = int(pos[0])
-                j0 = int(pos[1])
-                i1 = i0 + 1
-                j1 = j0 + 1
-
-                s1 = pos[0] - i0
-                t1 = pos[1] - j0
-                s0 = 1.0 - s1
-                t0 = 1.0 - t1
-
-                # Update field using interpolated values
-                field[i, j] = (
-                        s0 * (t0 * field[i0, j0] + t1 * field[i0, j1]) +
-                        s1 * (t0 * field[i1, j0] + t1 * field[i1, j1])
-                )
-
-    @ti.kernel
-    def diffuse_euler(self, field: ti.template(), diff: float):
-        """Apply diffusion using Gauss-Seidel relaxation"""
-        a = self.params.dt * diff * (self.nx - 2) * (self.ny - 2)
-        for k in range(20):  # Gauss-Seidel iterations
-            for i, j in field:
-                if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                    field[i, j] = (field[i, j] + a * (
-                            field[i + 1, j] + field[i - 1, j] +
-                            field[i, j + 1] + field[i, j - 1]
-                    )) / (1.0 + 4.0 * a)
-
-    def step_euler(self):
-        """Main Eulerian step function"""
-        # 1. Diffusion
-        self.diffuse_euler(self.velocity, self.params.viscosity)
-
-        # 2. Project after diffusion
+        self.compute_vorticity()
+        self.apply_vorticity_confinement()
+        self.diffuse(self.velocity, self.params.viscosity)
         self.project()
-
-        # 3. Advection
-        self.advect_euler(self.velocity, self.params.dt)
-        self.advect_euler(self.density, self.params.dt)
-
-        # 4. Project after advection
+        self.advect()
         self.project()
-
-        # 5. Apply forces
-        self.apply_forces()
-
-    @ti.kernel
-    def apply_forces(self):
-        """Apply external forces and effects"""
-        for i, j in self.velocity:
-            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                # Buoyancy force
-                buoyancy = self.temperature[i, j] * self.params.buoyancy
-                self.velocity[i, j][1] += buoyancy * self.params.dt
-
-                # Vorticity confinement
-                if self.params.vorticity > 0:
-                    curl = self.vorticity[i, j]
-                    force = ti.Vector([
-                        self.params.vorticity * curl * (self.velocity[i, j + 1][1] - self.velocity[i, j - 1][1]),
-                        -self.params.vorticity * curl * (self.velocity[i + 1, j][0] - self.velocity[i - 1, j][0])
-                    ])
-                    self.velocity[i, j] += force * self.params.dt
-
+        self.diffuse(self.density, 0.05)
 
     def add_density_velocity(self, x, y, dx=0, dy=0):
         radius = self.params.brush_size
@@ -461,26 +328,6 @@ class FluidSimulation:
                         if dx != 0 or dy != 0:
                             self.velocity[px, py][0] += dx * self.params.velocity_multiplier * intensity
                             self.velocity[px, py][1] += dy * self.params.velocity_multiplier * intensity
-
-    @ti.kernel
-    def apply_smoke_effect(self):
-        for i, j in self.smoke_density:
-            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                # Apply smoke rising effect
-                self.velocity[i, j][1] += self.smoke_density[i, j] * self.params.smoke_rise_speed
-
-                # Diffuse smoke
-                self.prev_smoke_density[i, j] = self.smoke_density[i, j]
-                self.smoke_density[i, j] = (
-                        self.prev_smoke_density[i, j] +
-                        self.params.diffusion_rate * (
-                                self.prev_smoke_density[i + 1, j] +
-                                self.prev_smoke_density[i - 1, j] +
-                                self.prev_smoke_density[i, j + 1] +
-                                self.prev_smoke_density[i, j - 1] -
-                                4 * self.prev_smoke_density[i, j]
-                        )
-                )
 
     @ti.kernel
     def update_ball_physics(self, mouse_x: float, mouse_y: float, is_dragging: int):
