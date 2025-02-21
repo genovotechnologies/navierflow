@@ -37,6 +37,13 @@ class FluidSimulation:
         self.nx = nx
         self.ny = ny
         self.method = method
+
+        # Fields for both methods
+        self.velocity = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
+        self.velocity_star = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))  # Add this
+        self.density = ti.field(dtype=ti.f32, shape=(nx, ny))
+        self.density_star = ti.field(dtype=ti.f32, shape=(nx, ny))
+        self.method = method
         self.dx = self.params.grid_spacing
         self.inv_dx = 1.0 / self.dx
 
@@ -210,12 +217,72 @@ class FluidSimulation:
 
                 self.particles[i] = new_pos
 
+    @ti.kernel
+    def semi_lagrangian_advect(self):
+        # Advect velocity field
+        for i, j in self.velocity:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                # Back-trace
+                pos = ti.Vector([float(i), float(j)]) - self.velocity[i, j] * self.params.dt
+
+                # Clamp position to grid
+                pos[0] = ti.min(ti.max(pos[0], 0.5), float(self.nx - 1.5))
+                pos[1] = ti.min(ti.max(pos[1], 0.5), float(self.ny - 1.5))
+
+                # Interpolation indices
+                i0 = ti.cast(pos[0], ti.i32)
+                j0 = ti.cast(pos[1], ti.i32)
+                i1 = i0 + 1
+                j1 = j0 + 1
+
+                # Interpolation weights
+                s1 = pos[0] - float(i0)
+                t1 = pos[1] - float(j0)
+                s0 = 1.0 - s1
+                t0 = 1.0 - t1
+
+                # Bilinear interpolation
+                self.velocity_star[i, j] = (
+                        s0 * (t0 * self.velocity[i0, j0] + t1 * self.velocity[i0, j1]) +
+                        s1 * (t0 * self.velocity[i1, j0] + t1 * self.velocity[i1, j1])
+                )
+
+        # Update velocity field
+        for i, j in self.velocity:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                self.velocity[i, j] = self.velocity_star[i, j]
+
+        # Advect density field
+        for i, j in self.density:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                pos = ti.Vector([float(i), float(j)]) - self.velocity[i, j] * self.params.dt
+                pos[0] = ti.min(ti.max(pos[0], 0.5), float(self.nx - 1.5))
+                pos[1] = ti.min(ti.max(pos[1], 0.5), float(self.ny - 1.5))
+
+                i0 = ti.cast(pos[0], ti.i32)
+                j0 = ti.cast(pos[1], ti.i32)
+                i1 = i0 + 1
+                j1 = j0 + 1
+
+                s1 = pos[0] - float(i0)
+                t1 = pos[1] - float(j0)
+                s0 = 1.0 - s1
+                t0 = 1.0 - t1
+
+                self.density_star[i, j] = (
+                        s0 * (t0 * self.density[i0, j0] + t1 * self.density[i0, j1]) +
+                        s1 * (t0 * self.density[i1, j0] + t1 * self.density[i1, j1])
+                )
+
+        # Update density field
+        for i, j in self.density:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                self.density[i, j] = self.density_star[i, j]
+
     def step(self):
         if self.method == 'eulerian':
-            # Update with MacCormack advection
-            self.maccormack_advect(self.velocity, self.velocity)
-            self.maccormack_advect(self.density, self.velocity)
-
+            self.eulerian_step()
+            self.semi_lagrangian_advect()  # Replace maccormack_advect with this
             self.diffuse(self.velocity, self.params.viscosity)
             self.project()
             self.update_particles()
@@ -459,13 +526,27 @@ class FluidSimulation:
                         s0 * (t0 * self.density[i0, j0] + t1 * self.density[i0, j1]) +
                         s1 * (t0 * self.density[i1, j0] + t1 * self.density[i1, j1])
                 )
+
+    @ti.func
+    def compute_cfl_dt(self):
+        max_velocity = 0.0
+        for i, j in self.velocity:
+            v_norm = ti.sqrt(self.velocity[i, j][0] ** 2 + self.velocity[i, j][1] ** 2)
+            max_velocity = ti.max(max_velocity, v_norm)
+
+        if max_velocity > 1e-6:
+            return ti.min(self.params.dt, 0.5 * self.dx / max_velocity)
+        return self.params.dt
+
     @ti.kernel
     def initialize_fields(self):
         for i, j in self.velocity:
-            self.velocity[i, j] = [0, 0]
-            self.density[i, j] = 0
-            self.temperature[i, j] = 0
-            self.vorticity[i, j] = 0
+            self.velocity[i, j] = ti.Vector([0.0, 0.0])
+            self.velocity_star[i, j] = ti.Vector([0.0, 0.0])
+            self.density[i, j] = 0.0
+            self.density_star[i, j] = 0.0
+            self.temperature[i, j] = 0.0
+            self.vorticity[i, j] = 0.0
 
 
     @ti.kernel
