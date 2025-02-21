@@ -68,13 +68,12 @@ class FluidSimulation:
         self.initialize_fields()
 
     def _init_eulerian_fields(self):
-        # Initialize Eulerian-specific fields
         self.particles = ti.Vector.field(2, dtype=ti.f32, shape=self.params.num_particles)
         self.particle_velocities = ti.Vector.field(2, dtype=ti.f32, shape=self.params.num_particles)
         self._initialize_particles()
 
     def _init_lbm_fields(self):
-        # Initialize LBM-specific fields
+        # Ball properties
         self.ball_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.ball_vel = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.ball_force = ti.Vector.field(2, dtype=ti.f32, shape=())
@@ -84,18 +83,19 @@ class FluidSimulation:
         self.ball_vel.fill([0, 0])
         self.ball_force.fill([0, 0])
 
-        # LBM distribution functions
+        # LBM specific fields
         self.f = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
-        self.f_next = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))  # Add double buffer
+        self.f_next = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
         self.feq = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
         self.w = ti.field(dtype=ti.f32, shape=9)
         self.e = ti.Matrix.field(2, 9, dtype=ti.f32, shape=())
 
         # Initialize lattice velocities
-        self.e.from_numpy(np.array([
+        e_data = np.array([
             [0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
             [1, 1], [-1, 1], [-1, -1], [1, -1]
-        ], dtype=np.float32).T)
+        ], dtype=np.float32)
+        self.e.from_numpy(e_data.T)
 
         self._initialize_lbm()
 
@@ -288,7 +288,7 @@ class FluidSimulation:
     def step(self):
         if self.method == 'eulerian':
             self.eulerian_step()
-            self.semi_lagrangian_advect()  # Replace maccormack_advect with this
+            self.advect()  # Using the updated advection method
             self.diffuse(self.velocity, self.params.viscosity)
             self.project()
             self.update_particles()
@@ -299,6 +299,7 @@ class FluidSimulation:
             self.lbm_stream_collide()
             self.update_ball()
             self.solve_navier_stokes()
+
 
     # Add Navier-Stokes solver for LBM
 
@@ -512,10 +513,15 @@ class FluidSimulation:
                 s1, t1 = pos[0] - i0, pos[1] - j0
                 s0, t0 = 1 - s1, 1 - t1
 
-                self.velocity[i, j] = (
+                self.velocity_tmp[i, j] = (
                         s0 * (t0 * self.velocity[i0, j0] + t1 * self.velocity[i0, j1]) +
                         s1 * (t0 * self.velocity[i1, j0] + t1 * self.velocity[i1, j1])
                 )
+
+        # Update velocity field
+        for i, j in self.velocity:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                self.velocity[i, j] = self.velocity_tmp[i, j]
 
         # Advect density field
         for i, j in self.density:
@@ -528,10 +534,15 @@ class FluidSimulation:
                 s1, t1 = pos[0] - i0, pos[1] - j0
                 s0, t0 = 1 - s1, 1 - t1
 
-                self.density[i, j] = (
+                self.density_tmp[i, j] = (
                         s0 * (t0 * self.density[i0, j0] + t1 * self.density[i0, j1]) +
                         s1 * (t0 * self.density[i1, j0] + t1 * self.density[i1, j1])
                 )
+
+        # Update density field
+        for i, j in self.density:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                self.density[i, j] = self.density_tmp[i, j]
 
     @ti.func
     def compute_cfl_dt(self):
@@ -548,12 +559,13 @@ class FluidSimulation:
     def initialize_fields(self):
         for i, j in self.velocity:
             self.velocity[i, j] = ti.Vector([0.0, 0.0])
-            self.velocity_star[i, j] = ti.Vector([0.0, 0.0])
+            self.velocity_tmp[i, j] = ti.Vector([0.0, 0.0])
             self.density[i, j] = 0.0
-            self.density_star[i, j] = 0.0
+            self.density_tmp[i, j] = 0.0
+            self.pressure[i, j] = 0.0
+            self.divergence[i, j] = 0.0
             self.temperature[i, j] = 0.0
             self.vorticity[i, j] = 0.0
-
 
     @ti.kernel
     def apply_temperature_buoyancy(self):
