@@ -25,6 +25,13 @@ class SimulationParams:
     lbm_relaxation_time: float = 0.6  # For LBM collision
     grid_spacing: float = 1.0  # For fixed reference frame
     mac_iterations: int = 3  # For MacCormack advection
+    tau: float = 0.6  # Relaxation time for LBM
+    cs: float = 1.0 / ti.sqrt(3.0)  # Lattice speed of sound
+    lattice_viscosity: float = (tau - 0.5) / 3.0  # Lattice viscosity
+    bounce_back_factor: float = -1.0  # Bounce-back coefficient
+    thermal_diffusivity: float = 0.1  # Thermal diffusion coefficient
+    gravity_strength: float = 9.81  # Gravity strength
+    ball_boundary_width: float = 2.0  # Width of ball boundary layer
 
 # Initialize Taichi once at the start
 ti.init(arch=ti.cpu)
@@ -89,6 +96,14 @@ class FluidSimulation:
         self.feq = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
         self.w = ti.field(dtype=ti.f32, shape=9)
         self.e = ti.Matrix.field(2, 9, dtype=ti.f32, shape=())
+
+        # Add new fields for enhanced LBM
+        self.f_temp = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))  # Temporary distribution
+        self.f_post = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))  # Post-collision distribution
+        self.boundary_mask = ti.field(dtype=ti.i32, shape=(self.nx, self.ny))  # For boundary handling
+        self.local_density = ti.field(dtype=ti.f32, shape=(self.nx, self.ny))  # Local density field
+        self.local_temperature = ti.field(dtype=ti.f32, shape=(self.nx, self.ny))  # Local temperature
+        self.ball_influence = ti.field(dtype=ti.f32, shape=(self.nx, self.ny))  # Ball influence field
 
         # Initialize lattice velocities
         e_data = np.array([
@@ -287,18 +302,20 @@ class FluidSimulation:
 
     def step(self):
         if self.method == 'eulerian':
-            self.eulerian_step()
             self.advect()  # Using the updated advection method
             self.diffuse(self.velocity, self.params.viscosity)
             self.project()
-            self.update_particles()
             self.compute_vorticity()
             self.apply_vorticity_confinement()
             self.apply_temperature_buoyancy()
         else:  # LBM
+            self._update_ball_influence()
             self.lbm_stream_collide()
+            self.update_thermal_effects()
             self.update_ball()
-            self.solve_navier_stokes()
+
+            # Copy post-collision distributions
+            self.f.copy_from(self.f_post)
 
 
     # Add Navier-Stokes solver for LBM
@@ -612,50 +629,126 @@ class FluidSimulation:
 
     @ti.kernel
     def lbm_stream_collide(self):
+        # Pre-compute ball influence field
+        self._update_ball_influence()
+
         # Stream step
-        for i, j, k in self.f_next:
-            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                # Find source location for streaming
-                src_i = i - int(self.e[k][0])
-                src_j = j - int(self.e[k][1])
+        for i, j, k in ti.ndrange(self.nx, self.ny, 9):
+            # Find source position for streaming
+            src_i = i - int(self.e[None][0, k])
+            src_j = j - int(self.e[None][1, k])
 
-                # Boundary handling
-                src_i = ti.max(0, ti.min(src_i, self.nx - 1))
-                src_j = ti.max(0, ti.min(src_j, self.ny - 1))
-
-                self.f_next[i, j, k] = self.f[src_i, src_j, k]
+            # Boundary handling
+            if 0 <= src_i < self.nx and 0 <= src_j < self.ny:
+                self.f_temp[i, j, k] = self.f[src_i, src_j, k]
+            else:
+                # Bounce-back at boundaries
+                self.f_temp[i, j, k] = self.f[i, j, 8 - k]  # Opposite direction
 
         # Collision step
         for i, j in ti.ndrange(self.nx, self.ny):
-            # Compute macroscopic quantities
             rho = 0.0
             u = ti.Vector([0.0, 0.0])
 
+            # Compute macroscopic quantities
             for k in ti.static(range(9)):
-                f = self.f_next[i, j, k]
+                f = self.f_temp[i, j, k]
                 rho += f
-                u += ti.Vector([self.e[k][0], self.e[k][1]]) * f
+                u += ti.Vector([self.e[None][0, k], self.e[None][1, k]]) * f
 
             if rho > 1e-6:
                 u /= rho
 
-            # Compute equilibrium
-            for k in ti.static(range(9)):
-                eu = u[0] * self.e[k][0] + u[1] * self.e[k][1]
-                usqr = u[0] * u[0] + u[1] * u[1]
-                feq = self.w[k] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * usqr)
+            # Apply ball influence
+            ball_effect = self.ball_influence[i, j]
+            if ball_effect > 0:
+                # Modify velocity based on ball presence
+                ball_pos = self.ball_pos[None]
+                to_ball = ti.Vector([float(i) - ball_pos[0], float(j) - ball_pos[1]])
+                dist = to_ball.norm()
+                if dist > 1e-6:
+                    to_ball /= dist
+                    u += to_ball * ball_effect * self.params.ball_interaction_strength
 
-                # Relaxation with bounded omega
-                omega = ti.min(ti.max(self.params.omega, 0.1), 2.0)
-                self.f[i, j, k] = self.f_next[i, j, k] * (1 - omega) + feq * omega
+            # Compute equilibrium with thermal effects
+            T = self.local_temperature[i, j]
+            cs_sq = self.params.cs * self.params.cs
+            for k in ti.static(range(9)):
+                e_u = (self.e[None][0, k] * u[0] + self.e[None][1, k] * u[1])
+                u_sq = u.dot(u)
+
+                # Enhanced equilibrium distribution with thermal effects
+                feq = self.w[k] * rho * (1.0 +
+                                         e_u / cs_sq +
+                                         (e_u * e_u - cs_sq * u_sq) / (2.0 * cs_sq * cs_sq) +
+                                         T * (e_u / cs_sq - u_sq / (2.0 * cs_sq)))
+
+                # Multi-relaxation collision
+                omega = 1.0 / (self.params.tau + 0.5 * T)  # Temperature-dependent relaxation
+                self.f_post[i, j, k] = self.f_temp[i, j, k] * (1 - omega) + feq * omega
 
             # Update macroscopic fields
-            self.density[i, j] = ti.max(rho, 0.1)
+            self.local_density[i, j] = ti.max(rho, 0.1)
             if rho > 1e-6:
                 self.velocity[i, j] = ti.Vector([
                     ti.min(ti.max(u[0], -100.0), 100.0),
                     ti.min(ti.max(u[1], -100.0), 100.0)
                 ])
+
+    @ti.kernel
+    def _update_ball_influence(self):
+        ball_pos = self.ball_pos[None]
+        radius = self.params.ball_radius
+
+        for i, j in self.ball_influence:
+            dx = float(i) - ball_pos[0]
+            dy = float(j) - ball_pos[1]
+            dist_sq = dx * dx + dy * dy
+
+            if dist_sq < radius * radius:
+                # Inside ball - solid boundary
+                self.ball_influence[i, j] = 1.0
+                self.boundary_mask[i, j] = 1
+            elif dist_sq < (radius + self.params.ball_boundary_width) * (radius + self.params.ball_boundary_width):
+                # Boundary layer
+                dist = ti.sqrt(dist_sq)
+                self.ball_influence[i, j] = 1.0 - (dist - radius) / self.params.ball_boundary_width
+                self.boundary_mask[i, j] = 0
+            else:
+                self.ball_influence[i, j] = 0.0
+                self.boundary_mask[i, j] = 0
+
+    @ti.kernel
+    def update_thermal_effects(self):
+        for i, j in self.local_temperature:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                # Diffusion
+                laplacian = (self.local_temperature[i + 1, j] +
+                             self.local_temperature[i - 1, j] +
+                             self.local_temperature[i, j + 1] +
+                             self.local_temperature[i, j - 1] -
+                             4.0 * self.local_temperature[i, j])
+
+                # Update temperature with diffusion and ball heating
+                self.local_temperature[i, j] += (
+                        self.params.thermal_diffusivity * laplacian * self.params.dt +
+                        self.ball_influence[i, j] * 0.1 * self.params.dt
+                )
+
+    @ti.kernel
+    def visualize_vorticity(self, pixels: ti.types.ndarray()):
+        for i, j in ti.ndrange(self.nx, self.ny):
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                # Compute local vorticity
+                du_dy = (self.velocity[i, j + 1][0] - self.velocity[i, j - 1][0]) * 0.5
+                dv_dx = (self.velocity[i + 1, j][1] - self.velocity[i - 1, j][1]) * 0.5
+                vort = (du_dy - dv_dx)
+
+                # Visualize vorticity with color
+                if vort > 0:
+                    pixels[i, j, 0] *= (1.0 + vort * 0.2)  # Red for positive vorticity
+                else:
+                    pixels[i, j, 2] *= (1.0 - vort * 0.2)  # Blue for negative vorticity
 
     @ti.kernel
     def update_ball(self):
