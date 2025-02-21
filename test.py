@@ -27,7 +27,7 @@ class SimulationParams:
     mac_iterations: int = 3  # For MacCormack advection
 
 # Initialize Taichi once at the start
-ti.init(arch=ti.vulkan)
+ti.init(arch=ti.cpu)
 
 
 @ti.data_oriented
@@ -64,24 +64,25 @@ class FluidSimulation:
         self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
 
-        # Enhanced LBM fields
+        # Add fields for MacCormack advection
+        self.phi_star = ti.field(dtype=ti.f32, shape=(nx, ny, 2))  # For vector fields
+        self.phi_temp = ti.field(dtype=ti.f32, shape=(nx, ny))  # For scalar fields
+
+        # Enhanced LBM fields with double buffering
         if method == 'lbm':
-            # LBM distribution functions
             self.f = ti.field(dtype=ti.f32, shape=(nx, ny, 9))
-            self.f_next = ti.field(dtype=ti.f32, shape=(nx, ny, 9))  # Double buffer
+            self.f_next = ti.field(dtype=ti.f32, shape=(nx, ny, 9))
             self.feq = ti.field(dtype=ti.f32, shape=(nx, ny, 9))
             self.w = ti.field(dtype=ti.f32, shape=9)
-            self.e = ti.Matrix.field(2, 9, dtype=ti.f32, shape=())
 
-            # LBM collision matrix for MRT
-            self.collision_matrix = ti.Matrix.field(9, 9, dtype=ti.f32, shape=())
-
-            # Initialize LBM specific fields
-            self._initialize_lbm()
-        else:
-            self.particles = ti.Vector.field(2, dtype=ti.f32, shape=self.params.num_particles)
-            self.particle_velocities = ti.Vector.field(2, dtype=ti.f32, shape=self.params.num_particles)
-            self._initialize_particles()
+            # Initialize lattice velocities
+            self.e = ti.Vector.field(2, dtype=ti.f32, shape=9)
+            # Initialize lattice velocities in a more compatible way
+            e_data = np.array([
+                [0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
+                [1, 1], [-1, 1], [-1, -1], [1, -1]
+            ], dtype=np.float32)
+            self.e.from_numpy(e_data)
 
         self.initialize_fields()
 
@@ -120,34 +121,59 @@ class FluidSimulation:
 
     @ti.kernel
     def maccormack_advect(self, field: ti.template(), velocity: ti.template()):
-        # Forward step
+        # Temporary fields for MacCormack steps
         for i, j in field:
             if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                # Forward step
                 pos = ti.Vector([float(i), float(j)]) - velocity[i, j] * self.params.dt
-                self.phi_star[i, j] = self.interpolate(field, pos)
+                pos[0] = ti.min(ti.max(pos[0], 0.5), float(self.nx - 1.5))
+                pos[1] = ti.min(ti.max(pos[1], 0.5), float(self.ny - 1.5))
 
-        # Backward step
+                i0, j0 = int(pos[0]), int(pos[1])
+                i1, j1 = i0 + 1, j0 + 1
+                s1, t1 = pos[0] - i0, pos[1] - j0
+                s0, t0 = 1 - s1, 1 - t1
+
+                # Bilinear interpolation for forward step
+                if ti.static(field.n == 2):  # Vector field
+                    self.phi_star[i, j] = (
+                            s0 * (t0 * velocity[i0, j0] + t1 * velocity[i0, j1]) +
+                            s1 * (t0 * velocity[i1, j0] + t1 * velocity[i1, j1])
+                    )
+                else:  # Scalar field
+                    val = (
+                            s0 * (t0 * field[i0, j0] + t1 * field[i0, j1]) +
+                            s1 * (t0 * field[i1, j0] + t1 * field[i1, j1])
+                    )
+                    self.phi_star[i, j] = val
+
+        # Backward step and correction
         for i, j in field:
             if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
                 pos = ti.Vector([float(i), float(j)]) + velocity[i, j] * self.params.dt
-                self.phi_corrected[i, j] = self.interpolate(self.phi_star, pos)
+                pos[0] = ti.min(ti.max(pos[0], 0.5), float(self.nx - 1.5))
+                pos[1] = ti.min(ti.max(pos[1], 0.5), float(self.ny - 1.5))
 
-        # Correction with flux limiting
-        for i, j in field:
-            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                correction = (field[i, j] - self.phi_corrected[i, j]) * 0.5
-                field[i, j] = self.phi_star[i, j] + correction
+                i0, j0 = int(pos[0]), int(pos[1])
+                i1, j1 = i0 + 1, j0 + 1
+                s1, t1 = pos[0] - i0, pos[1] - j0
+                s0, t0 = 1 - s1, 1 - t1
 
-                # Apply flux limiter
-                min_val = ti.min(
-                    field[i - 1, j], field[i + 1, j],
-                    field[i, j - 1], field[i, j + 1]
-                )
-                max_val = ti.max(
-                    field[i - 1, j], field[i + 1, j],
-                    field[i, j - 1], field[i, j + 1]
-                )
-                field[i, j] = ti.min(ti.max(field[i, j], min_val), max_val)
+                # Compute correction
+                if ti.static(field.n == 2):  # Vector field
+                    backward = (
+                            s0 * (t0 * self.phi_star[i0, j0] + t1 * self.phi_star[i0, j1]) +
+                            s1 * (t0 * self.phi_star[i1, j0] + t1 * self.phi_star[i1, j1])
+                    )
+                    correction = (field[i, j] - backward) * 0.5
+                    field[i, j] = self.phi_star[i, j] + correction
+                else:  # Scalar field
+                    backward = (
+                            s0 * (t0 * self.phi_star[i0, j0] + t1 * self.phi_star[i0, j1]) +
+                            s1 * (t0 * self.phi_star[i1, j0] + t1 * self.phi_star[i1, j1])
+                    )
+                    correction = (field[i, j] - backward) * 0.5
+                    field[i, j] = self.phi_star[i, j] + correction
 
     @ti.func
     def interpolate(self, field: ti.template(), pos: ti.template()):
@@ -186,28 +212,20 @@ class FluidSimulation:
 
     def step(self):
         if self.method == 'eulerian':
-            # Compute conservation quantities
-            self.compute_conservation_fluxes()
-
-            # Advection using MacCormack
+            # Update with MacCormack advection
             self.maccormack_advect(self.velocity, self.velocity)
             self.maccormack_advect(self.density, self.velocity)
 
-            # Continue with existing steps
             self.diffuse(self.velocity, self.params.viscosity)
             self.project()
             self.update_particles()
             self.compute_vorticity()
             self.apply_vorticity_confinement()
             self.apply_temperature_buoyancy()
-        else:
-            # Enhanced LBM method
+        else:  # LBM
             self.lbm_stream_collide()
-            self.update_ball_physics(
-                self.curr_mouse_pos[None][0],
-                self.curr_mouse_pos[None][1],
-                0
-            )
+            self.update_ball()
+            self.solve_navier_stokes()
 
     # Add Navier-Stokes solver for LBM
 
@@ -495,72 +513,50 @@ class FluidSimulation:
 
     @ti.kernel
     def lbm_stream_collide(self):
-        # Compute macroscopic quantities and equilibrium
+        # Stream step
+        for i, j, k in self.f_next:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                # Find source location for streaming
+                src_i = i - int(self.e[k][0])
+                src_j = j - int(self.e[k][1])
+
+                # Boundary handling
+                src_i = ti.max(0, ti.min(src_i, self.nx - 1))
+                src_j = ti.max(0, ti.min(src_j, self.ny - 1))
+
+                self.f_next[i, j, k] = self.f[src_i, src_j, k]
+
+        # Collision step
         for i, j in ti.ndrange(self.nx, self.ny):
+            # Compute macroscopic quantities
             rho = 0.0
             u = ti.Vector([0.0, 0.0])
 
-            # Calculate density and velocity
             for k in ti.static(range(9)):
-                f = self.f[i, j, k]
+                f = self.f_next[i, j, k]
                 rho += f
-                u += ti.Vector([
-                    self.e[None][0, k],
-                    self.e[None][1, k]
-                ]) * f
+                u += ti.Vector([self.e[k][0], self.e[k][1]]) * f
 
             if rho > 1e-6:
                 u /= rho
 
-            # Store macroscopic quantities
-            self.density[i, j] = rho
-            self.velocity[i, j] = u
-
-            # Compute equilibrium distributions
-            usqr = u.dot(u)
+            # Compute equilibrium
             for k in ti.static(range(9)):
-                eu = (self.e[None][0, k] * u[0] + self.e[None][1, k] * u[1])
-                self.feq[i, j, k] = self.w[k] * rho * (
-                        1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * usqr
-                )
+                eu = u[0] * self.e[k][0] + u[1] * self.e[k][1]
+                usqr = u[0] * u[0] + u[1] * u[1]
+                feq = self.w[k] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * usqr)
 
-        # MRT collision and streaming
-        for i, j in ti.ndrange(self.nx, self.ny):
-            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                # Transform to moment space
-                m = ti.Vector([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-                meq = ti.Vector([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                # Relaxation with bounded omega
+                omega = ti.min(ti.max(self.params.omega, 0.1), 2.0)
+                self.f[i, j, k] = self.f_next[i, j, k] * (1 - omega) + feq * omega
 
-                for k in ti.static(range(9)):
-                    f = self.f[i, j, k]
-                    feq = self.feq[i, j, k]
-                    for n in ti.static(range(9)):
-                        m[n] += self.collision_matrix[n, k] * f
-                        meq[n] += self.collision_matrix[n, k] * feq
-
-                # Relax different moments
-                s = ti.Vector([
-                    1.0, 1.4, 1.4, 1.0, 1.2, 1.0, 1.2, self.params.omega, self.params.omega
+            # Update macroscopic fields
+            self.density[i, j] = ti.max(rho, 0.1)
+            if rho > 1e-6:
+                self.velocity[i, j] = ti.Vector([
+                    ti.min(ti.max(u[0], -100.0), 100.0),
+                    ti.min(ti.max(u[1], -100.0), 100.0)
                 ])
-
-                for k in ti.static(range(9)):
-                    m[k] = m[k] - s[k] * (m[k] - meq[k])
-
-                # Back to velocity space and stream
-                for k in ti.static(range(9)):
-                    sum_f = 0.0
-                    for n in ti.static(range(9)):
-                        sum_f += self.collision_matrix[k, n] * m[n] / 9.0
-
-                    ni = i - int(self.e[None][0, k])
-                    nj = j - int(self.e[None][1, k])
-
-                    if 0 <= ni < self.nx and 0 <= nj < self.ny:
-                        self.f_next[ni, nj, k] = sum_f
-
-        # Update distribution functions
-        for i, j, k in self.f:
-            self.f[i, j, k] = self.f_next[i, j, k]
 
     @ti.kernel
     def update_ball(self):
