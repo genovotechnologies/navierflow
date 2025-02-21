@@ -14,24 +14,14 @@ class SimulationParams:
     vorticity: float = 0.3
     temperature: float = 0.5
     buoyancy: float = 1.0
-    num_particles: int = 10000
-    particle_speed_multiplier: float = 1.0
     ball_radius: int = 15
     ball_mass: float = 1.0
     ball_drag: float = 0.95
     ball_interaction_strength: float = 2.0
-    cfl_number: float = 0.5  # For timestep control
-    artificial_viscosity: float = 0.1  # For numerical stability
-    lbm_relaxation_time: float = 0.6  # For LBM collision
-    grid_spacing: float = 1.0  # For fixed reference frame
-    mac_iterations: int = 3  # For MacCormack advection
-    tau: float = 0.6  # Relaxation time for LBM
-    cs: float = 1.0 / ti.sqrt(3.0)  # Lattice speed of sound
-    lattice_viscosity: float = (tau - 0.5) / 3.0  # Lattice viscosity
-    bounce_back_factor: float = -1.0  # Bounce-back coefficient
-    thermal_diffusivity: float = 0.1  # Thermal diffusion coefficient
-    gravity_strength: float = 9.81  # Gravity strength
-    ball_boundary_width: float = 2.0  # Width of ball boundary layer
+    # Add visualization parameters
+    fluid_color: tuple = (0.2, 0.4, 0.8)  # Blue-ish color for fluid
+    ball_color: tuple = (0.8, 0.2, 0.2)   # Red-ish color for ball
+    background_color: tuple = (0.0, 0.0, 0.0)  # Black background
 
 # Initialize Taichi once at the start
 ti.init(arch=ti.cpu)
@@ -44,16 +34,12 @@ class FluidSimulation:
         self.nx = nx
         self.ny = ny
         self.method = method
-        self.dx = 1.0  # Grid spacing
-        self.inv_dx = 1.0 / self.dx
 
-        # Common fields for both methods
+        # Fields for both methods
         self.velocity = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
-        self.velocity_tmp = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))  # Add temporary velocity field
         self.density = ti.field(dtype=ti.f32, shape=(nx, ny))
-        self.density_tmp = ti.field(dtype=ti.f32, shape=(nx, ny))  # Add temporary density field
         self.pressure = ti.field(dtype=ti.f32, shape=(nx, ny))
-        self.divergence = ti.field(dtype=ti.f32, shape=(nx, ny))  # Make sure this is initialized
+        self.divergence = ti.field(dtype=ti.f32, shape=(nx, ny))
         self.temperature = ti.field(dtype=ti.f32, shape=(nx, ny))
         self.vorticity = ti.field(dtype=ti.f32, shape=(nx, ny))
 
@@ -61,23 +47,10 @@ class FluidSimulation:
         self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
 
-        # Conservation fields
-        self.mass_flux = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
-        self.momentum = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
-        self.energy = ti.field(dtype=ti.f32, shape=(nx, ny))
-
-        # Method-specific initialization
         if method == 'lbm':
             self._init_lbm_fields()
-        else:
-            self._init_eulerian_fields()
 
         self.initialize_fields()
-
-    def _init_eulerian_fields(self):
-        self.particles = ti.Vector.field(2, dtype=ti.f32, shape=self.params.num_particles)
-        self.particle_velocities = ti.Vector.field(2, dtype=ti.f32, shape=self.params.num_particles)
-        self._initialize_particles()
 
     def _init_lbm_fields(self):
         # Ball properties
@@ -85,32 +58,23 @@ class FluidSimulation:
         self.ball_vel = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.ball_force = ti.Vector.field(2, dtype=ti.f32, shape=())
 
-        # Initialize ball position in the center
+        # Initialize ball position
         self.ball_pos.fill([self.nx // 4, self.ny // 2])
         self.ball_vel.fill([0, 0])
         self.ball_force.fill([0, 0])
 
-        # LBM specific fields
+        # LBM fields with double buffering
         self.f = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
         self.f_next = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
         self.feq = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
         self.w = ti.field(dtype=ti.f32, shape=9)
         self.e = ti.Matrix.field(2, 9, dtype=ti.f32, shape=())
 
-        # Add new fields for enhanced LBM
-        self.f_temp = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))  # Temporary distribution
-        self.f_post = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))  # Post-collision distribution
-        self.boundary_mask = ti.field(dtype=ti.i32, shape=(self.nx, self.ny))  # For boundary handling
-        self.local_density = ti.field(dtype=ti.f32, shape=(self.nx, self.ny))  # Local density field
-        self.local_temperature = ti.field(dtype=ti.f32, shape=(self.nx, self.ny))  # Local temperature
-        self.ball_influence = ti.field(dtype=ti.f32, shape=(self.nx, self.ny))  # Ball influence field
-
         # Initialize lattice velocities
-        e_data = np.array([
+        self.e.from_numpy(np.array([
             [0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
             [1, 1], [-1, 1], [-1, -1], [1, -1]
-        ], dtype=np.float32)
-        self.e.from_numpy(e_data.T)
+        ], dtype=np.float32).T)
 
         self._initialize_lbm()
 
@@ -302,65 +266,67 @@ class FluidSimulation:
 
     def step(self):
         if self.method == 'eulerian':
-            self.advect()  # Using the updated advection method
+            self.eulerian_step()
+            self.advect()
             self.diffuse(self.velocity, self.params.viscosity)
             self.project()
             self.compute_vorticity()
             self.apply_vorticity_confinement()
             self.apply_temperature_buoyancy()
         else:  # LBM
-            self._update_ball_influence()
             self.lbm_stream_collide()
-            self.update_thermal_effects()
             self.update_ball()
-
-            # Copy post-collision distributions
-            self.f.copy_from(self.f_post)
 
 
     # Add Navier-Stokes solver for LBM
 
     @ti.kernel
     def render(self, pixels: ti.types.ndarray()):
-        # White background
+        # Set black background
         for i, j in ti.ndrange(self.nx, self.ny):
-            pixels[i, j, 0] = 1.0
-            pixels[i, j, 1] = 1.0
-            pixels[i, j, 2] = 1.0
+            pixels[i, j, 0] = self.params.background_color[0]
+            pixels[i, j, 1] = self.params.background_color[1]
+            pixels[i, j, 2] = self.params.background_color[2]
 
-            # Render density for both methods
+            # Visualize fluid
             density_val = self.density[i, j]
-            pixels[i, j, 0] *= (1.0 - density_val * 0.3)
-            pixels[i, j, 1] *= (1.0 - density_val * 0.3)
-            pixels[i, j, 2] *= (1.0 - density_val * 0.3)
+            vel_magnitude = ti.sqrt(
+                self.velocity[i, j][0] * self.velocity[i, j][0] +
+                self.velocity[i, j][1] * self.velocity[i, j][1]
+            )
 
-        # Method-specific rendering
-        if ti.static(self.method == 'eulerian'):
-            # Render particles
-            for i in range(self.params.num_particles):
-                pos = self.particles[i]
-                x = ti.cast(pos[0], ti.i32)
-                y = ti.cast(pos[1], ti.i32)
-                if 0 <= x < self.nx and 0 <= y < self.ny:
-                    pixels[x, y, 0] = 0.2
-                    pixels[x, y, 1] = 0.2
-                    pixels[x, y, 2] = 0.8
-        else:  # LBM method
-            # Get ball position
+            # Combine density and velocity for visualization
+            intensity = ti.min(density_val * 0.5 + vel_magnitude * 0.5, 1.0)
+
+            # Apply fluid color with intensity
+            pixels[i, j, 0] += intensity * self.params.fluid_color[0]
+            pixels[i, j, 1] += intensity * self.params.fluid_color[1]
+            pixels[i, j, 2] += intensity * self.params.fluid_color[2]
+
+            # Add vorticity visualization
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                vort = self.vorticity[i, j]
+                vort_color = ti.abs(vort) * 0.1
+                if vort > 0:
+                    pixels[i, j, 0] += vort_color  # Red for positive vorticity
+                else:
+                    pixels[i, j, 2] += vort_color  # Blue for negative vorticity
+
+        # Render ball for LBM method
+        if ti.static(self.method == 'lbm'):
             pos_x = ti.cast(self.ball_pos[None][0], ti.i32)
             pos_y = ti.cast(self.ball_pos[None][1], ti.i32)
             radius = self.params.ball_radius
 
-            # Render ball
             for i, j in ti.ndrange((-radius, radius + 1), (-radius, radius + 1)):
                 x = pos_x + i
                 y = pos_y + j
                 if 0 <= x < self.nx and 0 <= y < self.ny:
                     r2 = i * i + j * j
                     if r2 <= radius * radius:
-                        pixels[x, y, 0] = 0.2
-                        pixels[x, y, 1] = 0.2
-                        pixels[x, y, 2] = 0.2
+                        pixels[x, y, 0] = self.params.ball_color[0]
+                        pixels[x, y, 1] = self.params.ball_color[1]
+                        pixels[x, y, 2] = self.params.ball_color[2]
 
     def run_simulation(self):
         window = ti.ui.Window("Fluid Simulation", (self.nx, self.ny))
@@ -629,21 +595,18 @@ class FluidSimulation:
 
     @ti.kernel
     def lbm_stream_collide(self):
-        # Pre-compute ball influence field
-        self._update_ball_influence()
-
         # Stream step
-        for i, j, k in ti.ndrange(self.nx, self.ny, 9):
-            # Find source position for streaming
-            src_i = i - int(self.e[None][0, k])
-            src_j = j - int(self.e[None][1, k])
+        for i, j, k in self.f_next:
+            if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
+                # Find source position for streaming
+                src_i = i - int(self.e[None][0, k])
+                src_j = j - int(self.e[None][1, k])
 
-            # Boundary handling
-            if 0 <= src_i < self.nx and 0 <= src_j < self.ny:
-                self.f_temp[i, j, k] = self.f[src_i, src_j, k]
-            else:
-                # Bounce-back at boundaries
-                self.f_temp[i, j, k] = self.f[i, j, 8 - k]  # Opposite direction
+                # Boundary handling
+                src_i = ti.max(1, ti.min(src_i, self.nx - 2))
+                src_j = ti.max(1, ti.min(src_j, self.ny - 2))
+
+                self.f_next[i, j, k] = self.f[src_i, src_j, k]
 
         # Collision step
         for i, j in ti.ndrange(self.nx, self.ny):
@@ -652,7 +615,7 @@ class FluidSimulation:
 
             # Compute macroscopic quantities
             for k in ti.static(range(9)):
-                f = self.f_temp[i, j, k]
+                f = self.f_next[i, j, k]
                 rho += f
                 u += ti.Vector([self.e[None][0, k], self.e[None][1, k]]) * f
 
@@ -660,35 +623,27 @@ class FluidSimulation:
                 u /= rho
 
             # Apply ball influence
-            ball_effect = self.ball_influence[i, j]
-            if ball_effect > 0:
-                # Modify velocity based on ball presence
-                ball_pos = self.ball_pos[None]
-                to_ball = ti.Vector([float(i) - ball_pos[0], float(j) - ball_pos[1]])
-                dist = to_ball.norm()
-                if dist > 1e-6:
-                    to_ball /= dist
-                    u += to_ball * ball_effect * self.params.ball_interaction_strength
+            ball_pos = self.ball_pos[None]
+            dx = float(i) - ball_pos[0]
+            dy = float(j) - ball_pos[1]
+            dist_sq = dx * dx + dy * dy
 
-            # Compute equilibrium with thermal effects
-            T = self.local_temperature[i, j]
-            cs_sq = self.params.cs * self.params.cs
-            for k in ti.static(range(9)):
-                e_u = (self.e[None][0, k] * u[0] + self.e[None][1, k] * u[1])
-                u_sq = u.dot(u)
+            if dist_sq < self.params.ball_radius * self.params.ball_radius:
+                # Inside ball - bounce back
+                for k in ti.static(range(9)):
+                    self.f[i, j, k] = self.f_next[i, j, 8 - k]
+            else:
+                # Regular collision
+                usqr = u.dot(u)
+                for k in ti.static(range(9)):
+                    eu = (self.e[None][0, k] * u[0] + self.e[None][1, k] * u[1])
+                    feq = self.w[k] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * usqr)
 
-                # Enhanced equilibrium distribution with thermal effects
-                feq = self.w[k] * rho * (1.0 +
-                                         e_u / cs_sq +
-                                         (e_u * e_u - cs_sq * u_sq) / (2.0 * cs_sq * cs_sq) +
-                                         T * (e_u / cs_sq - u_sq / (2.0 * cs_sq)))
-
-                # Multi-relaxation collision
-                omega = 1.0 / (self.params.tau + 0.5 * T)  # Temperature-dependent relaxation
-                self.f_post[i, j, k] = self.f_temp[i, j, k] * (1 - omega) + feq * omega
+                    omega = ti.min(ti.max(self.params.omega, 0.1), 2.0)
+                    self.f[i, j, k] = self.f_next[i, j, k] * (1 - omega) + feq * omega
 
             # Update macroscopic fields
-            self.local_density[i, j] = ti.max(rho, 0.1)
+            self.density[i, j] = ti.max(rho, 0.1)
             if rho > 1e-6:
                 self.velocity[i, j] = ti.Vector([
                     ti.min(ti.max(u[0], -100.0), 100.0),
