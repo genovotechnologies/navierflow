@@ -37,61 +37,67 @@ class FluidSimulation:
         self.nx = nx
         self.ny = ny
         self.method = method
-
-        # Fields for both methods
-        self.velocity = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
-        self.velocity_star = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))  # Add this
-        self.density = ti.field(dtype=ti.f32, shape=(nx, ny))
-        self.density_star = ti.field(dtype=ti.f32, shape=(nx, ny))
-        self.method = method
-        self.dx = self.params.grid_spacing
+        self.dx = 1.0  # Grid spacing
         self.inv_dx = 1.0 / self.dx
 
-        # Fixed reference frame grid
-        self.cell_centers = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
-
-        # Common fields
+        # Common fields for both methods
         self.velocity = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
+        self.velocity_tmp = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))  # Add temporary velocity field
         self.density = ti.field(dtype=ti.f32, shape=(nx, ny))
+        self.density_tmp = ti.field(dtype=ti.f32, shape=(nx, ny))  # Add temporary density field
         self.pressure = ti.field(dtype=ti.f32, shape=(nx, ny))
+        self.divergence = ti.field(dtype=ti.f32, shape=(nx, ny))  # Make sure this is initialized
         self.temperature = ti.field(dtype=ti.f32, shape=(nx, ny))
         self.vorticity = ti.field(dtype=ti.f32, shape=(nx, ny))
+
+        # Mouse interaction
+        self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
+        self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
 
         # Conservation fields
         self.mass_flux = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
         self.momentum = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
         self.energy = ti.field(dtype=ti.f32, shape=(nx, ny))
 
-        # MacCormack advection fields
-        self.phi_n = ti.field(dtype=ti.f32, shape=(nx, ny))
-        self.phi_star = ti.field(dtype=ti.f32, shape=(nx, ny))
-        self.phi_corrected = ti.field(dtype=ti.f32, shape=(nx, ny))
-
-        # Mouse interaction
-        self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
-        self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
-
-        # Add fields for MacCormack advection
-        self.phi_star = ti.field(dtype=ti.f32, shape=(nx, ny, 2))  # For vector fields
-        self.phi_temp = ti.field(dtype=ti.f32, shape=(nx, ny))  # For scalar fields
-
-        # Enhanced LBM fields with double buffering
+        # Method-specific initialization
         if method == 'lbm':
-            self.f = ti.field(dtype=ti.f32, shape=(nx, ny, 9))
-            self.f_next = ti.field(dtype=ti.f32, shape=(nx, ny, 9))
-            self.feq = ti.field(dtype=ti.f32, shape=(nx, ny, 9))
-            self.w = ti.field(dtype=ti.f32, shape=9)
-
-            # Initialize lattice velocities
-            self.e = ti.Vector.field(2, dtype=ti.f32, shape=9)
-            # Initialize lattice velocities in a more compatible way
-            e_data = np.array([
-                [0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
-                [1, 1], [-1, 1], [-1, -1], [1, -1]
-            ], dtype=np.float32)
-            self.e.from_numpy(e_data)
+            self._init_lbm_fields()
+        else:
+            self._init_eulerian_fields()
 
         self.initialize_fields()
+
+    def _init_eulerian_fields(self):
+        # Initialize Eulerian-specific fields
+        self.particles = ti.Vector.field(2, dtype=ti.f32, shape=self.params.num_particles)
+        self.particle_velocities = ti.Vector.field(2, dtype=ti.f32, shape=self.params.num_particles)
+        self._initialize_particles()
+
+    def _init_lbm_fields(self):
+        # Initialize LBM-specific fields
+        self.ball_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
+        self.ball_vel = ti.Vector.field(2, dtype=ti.f32, shape=())
+        self.ball_force = ti.Vector.field(2, dtype=ti.f32, shape=())
+
+        # Initialize ball position in the center
+        self.ball_pos.fill([self.nx // 4, self.ny // 2])
+        self.ball_vel.fill([0, 0])
+        self.ball_force.fill([0, 0])
+
+        # LBM distribution functions
+        self.f = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
+        self.f_next = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))  # Add double buffer
+        self.feq = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
+        self.w = ti.field(dtype=ti.f32, shape=9)
+        self.e = ti.Matrix.field(2, 9, dtype=ti.f32, shape=())
+
+        # Initialize lattice velocities
+        self.e.from_numpy(np.array([
+            [0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
+            [1, 1], [-1, 1], [-1, -1], [1, -1]
+        ], dtype=np.float32).T)
+
+        self._initialize_lbm()
 
     @ti.kernel
     def initialize_grid(self):
