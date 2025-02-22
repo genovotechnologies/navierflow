@@ -854,7 +854,7 @@ def main():
     while window.running and not start_simulation:
         with gui.sub_window("Setup", 0.1, 0.1, 0.9, 0.9):
             gui.text("Choose simulation method:")
-            if gui.button("Eulerian (Fluid simulation)"):
+            if gui.button("Eulerian (Smoke simulation)"):
                 method = 'eulerian'
                 start_simulation = True
             if gui.button("Lattice Boltzmann (Ball in fluid)"):
@@ -873,13 +873,18 @@ def main():
         gui = sim_window.get_gui()
         pixels = np.zeros((size, size, 3), dtype=np.float32)
 
-
+        # Initialize mouse positions
+        prev_mouse = [0.0, 0.0]
+        sim.prev_mouse_pos[None] = ti.Vector([0.0, 0.0])
 
         # Initialize smoke source for LBM
         if method == 'lbm':
             sim.add_density_velocity(size // 8, size // 2, 1, 0)
 
         while sim_window.running:
+            # Get current mouse position at the start of each frame
+            curr_mouse = sim_window.get_cursor_pos()
+
             # GUI controls
             with gui.sub_window("Controls", 0.02, 0.02, 0.25, 0.98):
                 gui.text("=== Simulation Parameters ===")
@@ -887,12 +892,8 @@ def main():
 
                 if method == 'eulerian':
                     sim.params.brush_size = gui.slider_int("Brush Size", sim.params.brush_size, 1, 20)
-                    sim.params.velocity_multiplier = gui.slider_float("Velocity Multiplier",
-                                                                      sim.params.velocity_multiplier, 0.1, 10.0)
-                    sim.params.density_multiplier = gui.slider_float("Density Multiplier",
-                                                                     sim.params.density_multiplier, 0.1, 10.0)
-                    sim.params.mouse_velocity_scale = gui.slider_float("Mouse Sensitivity",
-                                                                       sim.params.mouse_velocity_scale, 1.0, 100.0)
+                    sim.params.density_multiplier = gui.slider_float("Density", sim.params.density_multiplier, 0.1, 10.0)
+                    sim.params.velocity_multiplier = gui.slider_float("Velocity", sim.params.velocity_multiplier, 0.1, 10.0)
                 else:
                     sim.params.ball_interaction_strength = gui.slider_float(
                         "Ball-Fluid Interaction",
@@ -901,25 +902,20 @@ def main():
                         5.0
                     )
 
-                    # Handle mouse interaction
-                    mouse_pos = sim_window.get_cursor_pos()
-                    if sim_window.is_pressed(ti.ui.LMB):
-                        x, y = int(mouse_pos[0] * size), int(mouse_pos[1] * size)
-                        if method == 'eulerian':
-                            # Calculate velocity from mouse movement
-                            curr_mouse = ti.Vector([mouse_pos[0], mouse_pos[1]])
-                            if sim.prev_mouse_pos[None][0] != 0 or sim.prev_mouse_pos[None][
-                                1] != 0:  # Check if we have a previous position
-                                dx = (curr_mouse[0] - sim.prev_mouse_pos[None][0]) * sim.params.mouse_velocity_scale
-                                dy = (curr_mouse[1] - sim.prev_mouse_pos[None][1]) * sim.params.mouse_velocity_scale
-                                sim.add_density_velocity(x, y, dx, dy)
-                            sim.prev_mouse_pos[None] = curr_mouse
-                        else:
-                            sim.ball_pos[None] = ti.Vector([float(x), float(y)])
-                    else:
-                        # Reset previous mouse position when not clicking
-                        sim.prev_mouse_pos[None] = ti.Vector([0.0, 0.0])
-            sim.prev_mouse_pos[None] = ti.Vector([mouse_pos[0], mouse_pos[1]])
+            # Handle mouse interaction
+            if sim_window.is_pressed(ti.ui.LMB):
+                x, y = int(curr_mouse[0] * size), int(curr_mouse[1] * size)
+                if method == 'eulerian':
+                    # Calculate velocity from mouse movement
+                    dx = curr_mouse[0] - prev_mouse[0]
+                    dy = curr_mouse[1] - prev_mouse[1]
+                    sim.add_density_velocity(x, y, dx * size, dy * size)
+                else:
+                    sim.ball_pos[None] = ti.Vector([float(x), float(y)])
+
+            # Update previous mouse position for next frame
+            prev_mouse = curr_mouse
+            sim.prev_mouse_pos[None] = ti.Vector([curr_mouse[0], curr_mouse[1]])
 
             # Update simulation
             sim.step()
@@ -932,6 +928,6 @@ def main():
         # Clean up
         sim_window.destroy()
 
-
 if __name__ == "__main__":
     main()
+
