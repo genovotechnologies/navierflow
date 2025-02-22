@@ -9,7 +9,7 @@ __created__ = "2025-02-22 07:25:51"
 __version__ = "2.3.0"
 
 
-ti.init(arch=ti.cpu, debug=True)
+ti.init(arch=ti.cuda, debug=True)
 
 
 @ti.data_oriented
@@ -476,8 +476,8 @@ def main():
     print(f"Enhanced Fluid Simulation v{__version__}")
 
     # Use power of 2 dimensions
-    width = 512  # Reduced from 800
-    height = 512
+    width = 300  # Reduced from 800
+    height = 300
 
     try:
         sim_manager = SimulationManager(width, height)
