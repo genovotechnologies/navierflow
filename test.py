@@ -18,6 +18,7 @@ class SimulationParams:
     ball_mass: float = 1.0
     ball_drag: float = 0.95
     ball_interaction_strength: float = 2.0
+    mouse_velocity_scale: float = 50.0
     # Add visualization parameters
     fluid_color: tuple = (0.2, 0.4, 0.8)  # Blue-ish color for fluid
     ball_color: tuple = (0.8, 0.2, 0.2)   # Red-ish color for ball
@@ -774,7 +775,6 @@ class FluidSimulation:
                     self.density[x, y] += intensity * 0.1
                     self.temperature[x, y] += intensity * 0.1
 
-
     def add_density_velocity(self, x, y, dx=0, dy=0):
         radius = self.params.brush_size
         for i in range(-radius, radius + 1):
@@ -784,11 +784,15 @@ class FluidSimulation:
                     r2 = i * i + j * j
                     if r2 <= radius * radius:
                         intensity = 1.0 - ti.sqrt(float(r2)) / radius
+                        # Add density
                         self.density[px, py] += self.params.density_multiplier * intensity
+                        # Add temperature
                         self.temperature[px, py] += self.params.temperature * intensity
+                        # Add velocity - scale by intensity and velocity multiplier
                         if dx != 0 or dy != 0:
-                            self.velocity[px, py][0] += dx * self.params.velocity_multiplier * intensity
-                            self.velocity[px, py][1] += dy * self.params.velocity_multiplier * intensity
+                            vel_intensity = intensity * self.params.velocity_multiplier
+                            self.velocity[px, py][0] += dx * vel_intensity
+                            self.velocity[px, py][1] += dy * vel_intensityx
 
     @ti.kernel
     def update_ball_physics(self, mouse_x: float, mouse_y: float, is_dragging: int):
@@ -869,6 +873,8 @@ def main():
         gui = sim_window.get_gui()
         pixels = np.zeros((size, size, 3), dtype=np.float32)
 
+
+
         # Initialize smoke source for LBM
         if method == 'lbm':
             sim.add_density_velocity(size // 8, size // 2, 1, 0)
@@ -881,6 +887,12 @@ def main():
 
                 if method == 'eulerian':
                     sim.params.brush_size = gui.slider_int("Brush Size", sim.params.brush_size, 1, 20)
+                    sim.params.velocity_multiplier = gui.slider_float("Velocity Multiplier",
+                                                                      sim.params.velocity_multiplier, 0.1, 10.0)
+                    sim.params.density_multiplier = gui.slider_float("Density Multiplier",
+                                                                     sim.params.density_multiplier, 0.1, 10.0)
+                    sim.params.mouse_velocity_scale = gui.slider_float("Mouse Sensitivity",
+                                                                       sim.params.mouse_velocity_scale, 1.0, 100.0)
                 else:
                     sim.params.ball_interaction_strength = gui.slider_float(
                         "Ball-Fluid Interaction",
@@ -889,19 +901,24 @@ def main():
                         5.0
                     )
 
-            # Handle mouse interaction
-            mouse_pos = sim_window.get_cursor_pos()
-            if sim_window.is_pressed(ti.ui.LMB):
-                x, y = int(mouse_pos[0] * size), int(mouse_pos[1] * size)
-                if method == 'eulerian':
-                    sim.add_density_velocity(
-                        x, y,
-                        mouse_pos[0] - sim.prev_mouse_pos[None][0],
-                        mouse_pos[1] - sim.prev_mouse_pos[None][1]
-                    )
-                else:
-                    sim.ball_pos[None] = ti.Vector([float(x), float(y)])
-
+                    # Handle mouse interaction
+                    mouse_pos = sim_window.get_cursor_pos()
+                    if sim_window.is_pressed(ti.ui.LMB):
+                        x, y = int(mouse_pos[0] * size), int(mouse_pos[1] * size)
+                        if method == 'eulerian':
+                            # Calculate velocity from mouse movement
+                            curr_mouse = ti.Vector([mouse_pos[0], mouse_pos[1]])
+                            if sim.prev_mouse_pos[None][0] != 0 or sim.prev_mouse_pos[None][
+                                1] != 0:  # Check if we have a previous position
+                                dx = (curr_mouse[0] - sim.prev_mouse_pos[None][0]) * sim.params.mouse_velocity_scale
+                                dy = (curr_mouse[1] - sim.prev_mouse_pos[None][1]) * sim.params.mouse_velocity_scale
+                                sim.add_density_velocity(x, y, dx, dy)
+                            sim.prev_mouse_pos[None] = curr_mouse
+                        else:
+                            sim.ball_pos[None] = ti.Vector([float(x), float(y)])
+                    else:
+                        # Reset previous mouse position when not clicking
+                        sim.prev_mouse_pos[None] = ti.Vector([0.0, 0.0])
             sim.prev_mouse_pos[None] = ti.Vector([mouse_pos[0], mouse_pos[1]])
 
             # Update simulation
