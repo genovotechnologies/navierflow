@@ -4,13 +4,13 @@ from dataclasses import dataclass
 
 @dataclass
 class SimulationParams:
-    dt: float = 0.1
+    dt: float = 0.03
     viscosity: float = 0.1
     omega: float = 1.0
-    density_multiplier: float = 5.0
-    velocity_multiplier: float = 2.0
+    density_multiplier: float = 1.0
+    velocity_multiplier: float = 100.0
     diffusion_rate: float = 0.05
-    brush_size: int = 2
+    brush_size: int = 3
     vorticity: float = 0.3
     temperature: float = 0.5
     buoyancy: float = 1.0
@@ -18,11 +18,6 @@ class SimulationParams:
     ball_mass: float = 1.0
     ball_drag: float = 0.95
     ball_interaction_strength: float = 2.0
-    mouse_velocity_scale: float = 50.0
-    # Add visualization parameters
-    fluid_color: tuple = (0.2, 0.4, 0.8)  # Blue-ish color for fluid
-    ball_color: tuple = (0.8, 0.2, 0.2)   # Red-ish color for ball
-    background_color: tuple = (0.0, 0.0, 0.0)  # Black background
 
 # Initialize Taichi once at the start
 ti.init(arch=ti.cpu)
@@ -36,7 +31,7 @@ class FluidSimulation:
         self.ny = ny
         self.method = method
 
-        # Common fields for both methods
+        # Fields for both methods
         self.velocity = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
         self.density = ti.field(dtype=ti.f32, shape=(nx, ny))
         self.pressure = ti.field(dtype=ti.f32, shape=(nx, ny))
@@ -44,16 +39,30 @@ class FluidSimulation:
         self.temperature = ti.field(dtype=ti.f32, shape=(nx, ny))
         self.vorticity = ti.field(dtype=ti.f32, shape=(nx, ny))
 
-        #fucking advect
-        self.velocity_tmp = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
-        self.density_tmp = ti.field(dtype=ti.f32, shape=(nx, ny))
-
         # Mouse interaction
         self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
 
+        # Ball properties for LBM
         if method == 'lbm':
-            self._init_lbm_fields()
+            self.ball_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
+            self.ball_vel = ti.Vector.field(2, dtype=ti.f32, shape=())
+            self.ball_force = ti.Vector.field(2, dtype=ti.f32, shape=())
+            # Initialize ball position in the center
+            self.ball_pos.fill([nx // 4, ny // 2])
+            self.ball_vel.fill([0, 0])
+            self.ball_force.fill([0, 0])
+
+            # LBM specific fields
+            self.f = ti.field(dtype=ti.f32, shape=(nx, ny, 9))
+            self.feq = ti.field(dtype=ti.f32, shape=(nx, ny, 9))
+            self.w = ti.field(dtype=ti.f32, shape=9)
+            self.e = ti.Matrix.field(2, 9, dtype=ti.f32, shape=())
+            self.e.from_numpy(np.array([
+                [0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
+                [1, 1], [-1, 1], [-1, -1], [1, -1]
+            ], dtype=np.float32).T)
+            self._initialize_lbm()
 
         self.initialize_fields()
 
@@ -281,70 +290,60 @@ class FluidSimulation:
         else:  # LBM
             self.lbm_stream_collide()
             self.update_ball()
+            self.solve_navier_stokes()
 
-    # Add Navier-Stokes solver for LBM
+    def add_velocity(self, x, y, dx, dy):
+        """Add velocity to the fluid for Eulerian method"""
+        radius = self.params.brush_size
+        for i in range(-radius, radius + 1):
+            for j in range(-radius, radius + 1):
+                px, py = x + i, y + j
+                if 0 <= px < self.nx and 0 <= py < self.ny:
+                    r2 = i * i + j * j
+                    if r2 <= radius * radius:
+                        intensity = 1.0 - ti.sqrt(float(r2)) / radius
+                        # Only modify velocity, not density
+                        self.velocity[px, py][0] += dx * self.params.velocity_multiplier * intensity
+                        self.velocity[px, py][1] += dy * self.params.velocity_multiplier * intensity
 
     @ti.kernel
     def render(self, pixels: ti.types.ndarray()):
-        # Black background
+        # White background
         for i, j in ti.ndrange(self.nx, self.ny):
-            pixels[i, j, 0] = 0.0  # Red
-            pixels[i, j, 1] = 0.0  # Green
-            pixels[i, j, 2] = 0.0  # Blue
+            pixels[i, j, 0] = 1.0
+            pixels[i, j, 1] = 1.0
+            pixels[i, j, 2] = 1.0
 
-            # Visualize fluid
-            if self.method == 'eulerian':
-                # Compute fluid intensity from density and velocity
-                density_val = self.density[i, j]
-                vel = self.velocity[i, j]
-                vel_magnitude = ti.sqrt(vel[0] * vel[0] + vel[1] * vel[1])
-
-                # Combined intensity from density and velocity
-                intensity = ti.min(density_val * 0.5 + vel_magnitude * 2.0, 1.0)
-
-                # Blue-white color scheme for Eulerian fluid
-                pixels[i, j, 0] = intensity * 0.7  # Red component
-                pixels[i, j, 1] = intensity * 0.8  # Green component
-                pixels[i, j, 2] = intensity  # Blue component
-
-                # Add vorticity visualization
-                if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                    vort = self.vorticity[i, j]
-                    vort_intensity = ti.abs(vort) * 0.2
-                    if vort > 0:
-                        pixels[i, j, 0] += vort_intensity  # Add red for positive vorticity
-                    else:
-                        pixels[i, j, 2] += vort_intensity  # Add blue for negative vorticity
+            if ti.static(self.method == 'eulerian'):
+                # For Eulerian: show fluid motion through velocity field
+                vel_magnitude = ti.sqrt(
+                    self.velocity[i, j][0] * self.velocity[i, j][0] +
+                    self.velocity[i, j][1] * self.velocity[i, j][1]
+                )
+                # Visualize velocity as color intensity
+                pixels[i, j, 0] = 1.0 - vel_magnitude * 0.5  # Red
+                pixels[i, j, 1] = 1.0 - vel_magnitude * 0.3  # Green
+                pixels[i, j, 2] = 1.0  # Keep blue at max
 
             else:  # LBM method
-                # Visualize fluid density with velocity
+                # First render the smoke/density effect
                 density_val = self.density[i, j]
-                vel = self.velocity[i, j]
-                vel_magnitude = ti.sqrt(vel[0] * vel[0] + vel[1] * vel[1])
+                pixels[i, j, 0] *= (1.0 - density_val * 0.3)
+                pixels[i, j, 1] *= (1.0 - density_val * 0.3)
+                pixels[i, j, 2] *= (1.0 - density_val * 0.3)
 
-                # Combined visualization
-                intensity = ti.min(density_val * 0.5 + vel_magnitude * 2.0, 1.0)
-                pixels[i, j, 0] = intensity * 0.2  # Red component
-                pixels[i, j, 1] = intensity * 0.5  # Green component
-                pixels[i, j, 2] = intensity * 0.8  # Blue component
+                # Then render the ball
+                pos_x = ti.cast(self.ball_pos[None][0], ti.i32)
+                pos_y = ti.cast(self.ball_pos[None][1], ti.i32)
+                radius = self.params.ball_radius
 
-        # Render ball for LBM method
-        if ti.static(self.method == 'lbm'):
-            pos_x = ti.cast(self.ball_pos[None][0], ti.i32)
-            pos_y = ti.cast(self.ball_pos[None][1], ti.i32)
-            radius = self.params.ball_radius
-
-            for i, j in ti.ndrange((-radius, radius + 1), (-radius, radius + 1)):
-                x = pos_x + i
-                y = pos_y + j
-                if 0 <= x < self.nx and 0 <= y < self.ny:
-                    r2 = i * i + j * j
-                    if r2 <= radius * radius:
-                        # White ball with soft edges
-                        intensity = 1.0 - ti.sqrt(float(r2)) / radius
-                        pixels[x, y, 0] = intensity
-                        pixels[x, y, 1] = intensity
-                        pixels[x, y, 2] = intensity
+                # Check if current pixel is within ball radius
+                dx = i - pos_x
+                dy = j - pos_y
+                if dx * dx + dy * dy <= radius * radius:
+                    pixels[i, j, 0] = 0.2
+                    pixels[i, j, 1] = 0.2
+                    pixels[i, j, 2] = 0.2
 
     def run_simulation(self):
         window = ti.ui.Window("Fluid Simulation", (self.nx, self.ny))
@@ -601,7 +600,6 @@ class FluidSimulation:
                 buoyant_force = self.temperature[i, j] * self.params.buoyancy
                 self.velocity[i, j][1] += buoyant_force * self.params.dt
 
-
     # 3. Enhanced LBM Implementation
     @ti.kernel
     def _initialize_lbm(self):
@@ -784,15 +782,16 @@ class FluidSimulation:
                     r2 = i * i + j * j
                     if r2 <= radius * radius:
                         intensity = 1.0 - ti.sqrt(float(r2)) / radius
-                        # Add density
-                        self.density[px, py] += self.params.density_multiplier * intensity
-                        # Add temperature
-                        self.temperature[px, py] += self.params.temperature * intensity
-                        # Add velocity - scale by intensity and velocity multiplier
+                        # Add density with smooth falloff
+                        self.density[px, py] = min(
+                            self.density[px, py] + self.params.density_multiplier * intensity,
+                            2.0  # Cap maximum density for better visualization
+                        )
+                        # Add velocity with smooth falloff
                         if dx != 0 or dy != 0:
-                            vel_intensity = intensity * self.params.velocity_multiplier
-                            self.velocity[px, py][0] += dx * vel_intensity
-                            self.velocity[px, py][1] += dy * vel_intensityx
+                            vel_scale = intensity * self.params.velocity_multiplier
+                            self.velocity[px, py][0] += dx * vel_scale
+                            self.velocity[px, py][1] += dy * vel_scale
 
     @ti.kernel
     def update_ball_physics(self, mouse_x: float, mouse_y: float, is_dragging: int):
@@ -902,20 +901,21 @@ def main():
                         5.0
                     )
 
-            # Handle mouse interaction
-            if sim_window.is_pressed(ti.ui.LMB):
-                x, y = int(curr_mouse[0] * size), int(curr_mouse[1] * size)
-                if method == 'eulerian':
-                    # Calculate velocity from mouse movement
-                    dx = curr_mouse[0] - prev_mouse[0]
-                    dy = curr_mouse[1] - prev_mouse[1]
-                    sim.add_density_velocity(x, y, dx * size, dy * size)
-                else:
-                    sim.ball_pos[None] = ti.Vector([float(x), float(y)])
+                    # Handle mouse interaction
+                    curr_mouse = sim_window.get_cursor_pos()
+                    if sim_window.is_pressed(ti.ui.LMB):
+                        x, y = int(curr_mouse[0] * size), int(curr_mouse[1] * size)
+                        if method == 'eulerian':
+                            # For Eulerian: only add velocity, no density
+                            dx = (curr_mouse[0] - sim.prev_mouse_pos[None][0]) * 50.0
+                            dy = (curr_mouse[1] - sim.prev_mouse_pos[None][1]) * 50.0
+                            sim.add_velocity(x, y, dx, dy)  # New method for Eulerian
+                        else:
+                            # For LBM: move ball and add density
+                            sim.ball_pos[None] = ti.Vector([float(x), float(y)])
+                            sim.add_density_velocity(x, y, 0, 0)  # Add smoke effect for LBM
 
-            # Update previous mouse position for next frame
-            prev_mouse = curr_mouse
-            sim.prev_mouse_pos[None] = ti.Vector([curr_mouse[0], curr_mouse[1]])
+                    sim.prev_mouse_pos[None] = ti.Vector([curr_mouse[0], curr_mouse[1]])
 
             # Update simulation
             sim.step()
