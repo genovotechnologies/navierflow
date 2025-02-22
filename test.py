@@ -39,13 +39,13 @@ class FluidSimulation:
         self.temperature = ti.field(dtype=ti.f32, shape=(nx, ny))
         self.vorticity = ti.field(dtype=ti.f32, shape=(nx, ny))
 
+        #This is the fucking velocity tmp that was giving shitty errors do not remove
+        self.velocity_tmp = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
+        self.density_tmp = ti.field(dtype=ti.f32, shape=(nx, ny))
+
         # Mouse interaction
         self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
-
-        #Some velocity tmp type shit do not remove fpr any means
-        self.velocity_tmp = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
-        self.density_tmp = ti.field(dtype=ti.f32, shape=(nx, ny))
 
         # Ball properties for LBM
         if method == 'lbm':
@@ -319,35 +319,38 @@ class FluidSimulation:
             pixels[i, j, 2] = 1.0
 
             if ti.static(self.method == 'eulerian'):
-                # For Eulerian: show fluid motion through velocity field
+                # Visualize velocity field for Eulerian method
                 vel_magnitude = ti.sqrt(
                     self.velocity[i, j][0] * self.velocity[i, j][0] +
                     self.velocity[i, j][1] * self.velocity[i, j][1]
                 )
-                # Visualize velocity as color intensity
-                pixels[i, j, 0] = 1.0 - vel_magnitude * 0.5  # Red
-                pixels[i, j, 1] = 1.0 - vel_magnitude * 0.3  # Green
-                pixels[i, j, 2] = 1.0  # Keep blue at max
+                # Create a gradient effect based on velocity magnitude
+                pixels[i, j, 0] = 1.0 - vel_magnitude * 0.5  # Red channel
+                pixels[i, j, 1] = 1.0 - vel_magnitude * 0.3  # Green channel
+                pixels[i, j, 2] = 1.0 - vel_magnitude * 0.1  # Blue channel
 
             else:  # LBM method
-                # First render the smoke/density effect
+                # Render density for smoke effect
                 density_val = self.density[i, j]
                 pixels[i, j, 0] *= (1.0 - density_val * 0.3)
                 pixels[i, j, 1] *= (1.0 - density_val * 0.3)
                 pixels[i, j, 2] *= (1.0 - density_val * 0.3)
 
-                # Then render the ball
-                pos_x = ti.cast(self.ball_pos[None][0], ti.i32)
-                pos_y = ti.cast(self.ball_pos[None][1], ti.i32)
-                radius = self.params.ball_radius
+        # Render ball for LBM method only
+        if ti.static(self.method == 'lbm'):
+            pos_x = ti.cast(self.ball_pos[None][0], ti.i32)
+            pos_y = ti.cast(self.ball_pos[None][1], ti.i32)
+            radius = self.params.ball_radius
 
-                # Check if current pixel is within ball radius
-                dx = i - pos_x
-                dy = j - pos_y
-                if dx * dx + dy * dy <= radius * radius:
-                    pixels[i, j, 0] = 0.2
-                    pixels[i, j, 1] = 0.2
-                    pixels[i, j, 2] = 0.2
+            for i, j in ti.ndrange((-radius, radius + 1), (-radius, radius + 1)):
+                x = pos_x + i
+                y = pos_y + j
+                if 0 <= x < self.nx and 0 <= y < self.ny:
+                    r2 = i * i + j * j
+                    if r2 <= radius * radius:
+                        pixels[x, y, 0] = 0.2
+                        pixels[x, y, 1] = 0.2
+                        pixels[x, y, 2] = 0.2
 
     def run_simulation(self):
         window = ti.ui.Window("Fluid Simulation", (self.nx, self.ny))
