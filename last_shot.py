@@ -5,16 +5,45 @@ from datetime import datetime
 # Metadata
 __author__ = "tafolabi009"
 __created__ = "2025-02-22 07:25:51"
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 ti.init(arch=ti.vulkan, default_fp=ti.f32)
 
 
+class StartScreen:
+    def __init__(self, window):
+        self.window = window
+        self.gui = window.get_gui()
+        self.selected_method = "eulerian"
+        self.start_simulation = False
+        self.brush_size = 20.0  # Default brush size
+
+    def render(self):
+        # Center the start menu
+        with self.gui.sub_window("Start Menu", 0.3, 0.3, 0.4, 0.4):
+            self.gui.text("Welcome to Fluid Simulation")
+            self.gui.text("Select Simulation Method:")
+
+            if self.gui.button("Eulerian Method"):
+                self.selected_method = "eulerian"
+            if self.gui.button("Lattice Boltzmann Method (LBM)"):
+                self.selected_method = "lbm"
+
+            self.gui.text("")  # Spacing
+            self.gui.text("Initial Brush Size:")
+            self.brush_size = self.gui.slider_float("", self.brush_size, 5.0, 50.0)
+
+            self.gui.text("")  # Spacing
+            if self.gui.button("Start Simulation"):
+                self.start_simulation = True
+
+
 @ti.data_oriented
 class EulerianSolver:
-    def __init__(self, width, height):
+    def __init__(self, width, height, brush_size=20.0):
         self.width = width
         self.height = height
+        self.force_radius = brush_size  # Initialize with brush size
 
         # Core fluid fields
         self.velocity = ti.Vector.field(2, dtype=ti.f32, shape=(width, height))
@@ -27,12 +56,12 @@ class EulerianSolver:
         self.prev_mouse_pos = ti.Vector([0.0, 0.0])
 
         # Simulation parameters
-        self.dt = 0.03
-        self.num_iterations = 40
+        self.dt = 0.05
+        self.num_iterations = 50
         self.velocity_dissipation = 0.999
         self.density_dissipation = 0.995
-        self.force_radius = 15.0
-        self.force_strength = 50.0
+        self.force_radius = 25.0
+        self.force_strength = 70.0
 
         self.initialize_fields()
 
@@ -116,6 +145,9 @@ class EulerianSolver:
             v = self.velocity[i, j]
             v -= ti.Vector([pr - pl, pt - pb]) * 0.5
             self.velocity[i, j] = v
+
+    def update_brush_size(self, size):
+        self.force_radius = size
 
     def step(self, mouse_pos=None, mouse_down=False):
         if mouse_down and mouse_pos is not None:
@@ -309,14 +341,20 @@ class LBMSolver:
 
 
 class SimulationManager:
-    def __init__(self, width, height):
+    def __init__(self, width, height, initial_brush_size=20.0):
         self.width = width
         self.height = height
-        self.method = "eulerian"  # or "lbm"
-        self.view_mode = "density"  # "density", "pressure", or "velocity"
+        self.method = "eulerian"
+        self.view_mode = "density"
+        self.brush_size = initial_brush_size
 
-        self.eulerian_solver = EulerianSolver(width, height)
+        self.eulerian_solver = EulerianSolver(width, height, self.brush_size)
         self.lbm_solver = LBMSolver(width, height)
+
+    def update_brush_size(self, size):
+        self.brush_size = size
+        if self.method == "eulerian":
+            self.eulerian_solver.update_brush_size(size)
 
     def update(self, mouse_pos=None, mouse_down=False):
         if self.method == "eulerian":
@@ -353,10 +391,11 @@ class GUIManager:
         self.window = ti.ui.Window("Fluid Simulation", (width, height), vsync=True)
         self.canvas = self.window.get_canvas()
         self.gui = self.window.get_gui()
+        self.start_screen = StartScreen(self.window)
 
     def render(self, simulation):
         # Create GUI controls
-        with self.gui.sub_window("Controls", 0.02, 0.02, 0.2, 0.15):
+        with self.gui.sub_window("Controls", 0.02, 0.02, 0.2, 0.25):
             if self.gui.button("Eulerian"):
                 simulation.method = "eulerian"
             if self.gui.button("LBM"):
@@ -369,6 +408,11 @@ class GUIManager:
                     simulation.view_mode = "pressure"
                 if self.gui.button("Velocity"):
                     simulation.view_mode = "velocity"
+
+                # Add brush size control
+                new_brush_size = self.gui.slider_float("Brush Size", simulation.brush_size, 5.0, 70.0)
+                if new_brush_size != simulation.brush_size:
+                    simulation.update_brush_size(new_brush_size)
 
         # Get field to display
         field = simulation.get_display_field()
@@ -452,27 +496,31 @@ def main():
     print(f"Enhanced Fluid Simulation v{__version__}")
     width, height = 800, 800
 
-    sim_manager = SimulationManager(width, height)
     gui_manager = GUIManager(width, height)
-
-    last_mouse_pos = None
+    start_screen = gui_manager.start_screen
+    sim_manager = None
 
     while gui_manager.window.running:
-        # Handle input
-        mouse_pos = gui_manager.window.get_cursor_pos()
-        mouse_pos = (mouse_pos[0] * width, mouse_pos[1] * height)
-        mouse_down = gui_manager.window.is_pressed(ti.ui.LMB)
+        if not start_screen.start_simulation:
+            # Show start screen
+            start_screen.render()
+            gui_manager.window.show()
+        else:
+            # Initialize simulation if not done yet
+            if sim_manager is None:
+                sim_manager = SimulationManager(width, height, start_screen.brush_size)
+                sim_manager.method = start_screen.selected_method
 
-        # Calculate mouse velocity for smoother interaction
-        if last_mouse_pos is None:
-            last_mouse_pos = mouse_pos
+            # Handle input
+            mouse_pos = gui_manager.window.get_cursor_pos()
+            mouse_pos = (mouse_pos[0] * width, mouse_pos[1] * height)
+            mouse_down = gui_manager.window.is_pressed(ti.ui.LMB)
 
-        # Update simulation
-        sim_manager.update(mouse_pos, mouse_down)
-        last_mouse_pos = mouse_pos
+            # Update simulation
+            sim_manager.update(mouse_pos, mouse_down)
 
-        # Render
-        gui_manager.render(sim_manager)
+            # Render
+            gui_manager.render(sim_manager)
 
 
 if __name__ == "__main__":
