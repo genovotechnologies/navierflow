@@ -43,6 +43,10 @@ class FluidSimulation:
         self.temperature = ti.field(dtype=ti.f32, shape=(nx, ny))
         self.vorticity = ti.field(dtype=ti.f32, shape=(nx, ny))
 
+        #fucking advect
+        self.velocity_tmp = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
+        self.density_tmp = ti.field(dtype=ti.f32, shape=(nx, ny))
+
         # Mouse interaction
         self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
@@ -498,44 +502,72 @@ class FluidSimulation:
 
     @ti.kernel
     def advect(self):
-        # Advect velocity field
+        # First advect velocity field
         for i, j in self.velocity:
             if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                pos = ti.Vector([float(i), float(j)]) - self.velocity[i, j] * self.params.dt
-                pos = ti.max(ti.Vector([0.5, 0.5]), ti.min(ti.Vector([self.nx - 1.5, self.ny - 1.5]), pos))
+                # Back-trace the particle position
+                pos = ti.Vector([float(i), float(j)])
+                vel = self.velocity[i, j]
+                pos_prev = pos - vel * self.params.dt
 
-                i0, j0 = int(pos[0]), int(pos[1])
-                i1, j1 = i0 + 1, j0 + 1
-                s1, t1 = pos[0] - i0, pos[1] - j0
-                s0, t0 = 1 - s1, 1 - t1
+                # Ensure we stay within bounds
+                pos_prev[0] = ti.min(ti.max(pos_prev[0], 0.5), float(self.nx - 1.5))
+                pos_prev[1] = ti.min(ti.max(pos_prev[1], 0.5), float(self.ny - 1.5))
 
+                # Bilinear interpolation indices
+                i0 = int(pos_prev[0])
+                j0 = int(pos_prev[1])
+                i1 = i0 + 1
+                j1 = j0 + 1
+
+                # Interpolation weights
+                s1 = pos_prev[0] - i0
+                t1 = pos_prev[1] - j0
+                s0 = 1.0 - s1
+                t0 = 1.0 - t1
+
+                # Store interpolated velocity in temporary field
                 self.velocity_tmp[i, j] = (
                         s0 * (t0 * self.velocity[i0, j0] + t1 * self.velocity[i0, j1]) +
                         s1 * (t0 * self.velocity[i1, j0] + t1 * self.velocity[i1, j1])
                 )
 
-        # Update velocity field
+        # Update velocity field from temporary field
         for i, j in self.velocity:
             if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                self.velocity[i, j] = self.velocity[i, j]
+                self.velocity[i, j] = self.velocity_tmp[i, j]
 
-        # Advect density field
+        # Then advect density field using updated velocity
         for i, j in self.density:
             if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                pos = ti.Vector([float(i), float(j)]) - self.velocity[i, j] * self.params.dt
-                pos = ti.max(ti.Vector([0.5, 0.5]), ti.min(ti.Vector([self.nx - 1.5, self.ny - 1.5]), pos))
+                # Back-trace the particle position
+                pos = ti.Vector([float(i), float(j)])
+                vel = self.velocity[i, j]
+                pos_prev = pos - vel * self.params.dt
 
-                i0, j0 = int(pos[0]), int(pos[1])
-                i1, j1 = i0 + 1, j0 + 1
-                s1, t1 = pos[0] - i0, pos[1] - j0
-                s0, t0 = 1 - s1, 1 - t1
+                # Ensure we stay within bounds
+                pos_prev[0] = ti.min(ti.max(pos_prev[0], 0.5), float(self.nx - 1.5))
+                pos_prev[1] = ti.min(ti.max(pos_prev[1], 0.5), float(self.ny - 1.5))
 
+                # Bilinear interpolation indices
+                i0 = int(pos_prev[0])
+                j0 = int(pos_prev[1])
+                i1 = i0 + 1
+                j1 = j0 + 1
+
+                # Interpolation weights
+                s1 = pos_prev[0] - i0
+                t1 = pos_prev[1] - j0
+                s0 = 1.0 - s1
+                t0 = 1.0 - t1
+
+                # Store interpolated density in temporary field
                 self.density_tmp[i, j] = (
                         s0 * (t0 * self.density[i0, j0] + t1 * self.density[i0, j1]) +
                         s1 * (t0 * self.density[i1, j0] + t1 * self.density[i1, j1])
                 )
 
-        # Update density field
+        # Update density field from temporary field
         for i, j in self.density:
             if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
                 self.density[i, j] = self.density_tmp[i, j]
