@@ -176,37 +176,43 @@ class LBMSolver:
         self.height = height
 
         # LBM parameters
-        self.tau = 0.6  # Relaxation time
+        self.tau = 0.6
         self.omega = 1.0 / self.tau
+        self.cs2 = 1.0 / 3.0
+        self.viscosity = self.cs2 * (self.tau - 0.5)
 
-        # Ball parameters
+        self.ball_force = ti.Vector.field(2, dtype=ti.f32, shape=())
+
+        # Ball properties
         self.ball_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.ball_vel = ti.Vector.field(2, dtype=ti.f32, shape=())
-        self.ball_radius = 15.0
+        self.ball_radius = 10.0
         self.ball_mass = 1.0
-        self.gravity = ti.Vector([0.0, -0.1])
-        self.restitution = 0.8
 
-        # Lattice velocities (D2Q9)
-        self.c = ti.Vector.field(2, dtype=ti.f32, shape=9)
-        self.w = ti.field(dtype=ti.f32, shape=9)
+        # Initialize ball position and velocity
+        self.ball_pos[None] = ti.Vector([width // 2, height // 2])
+        self.ball_vel[None] = ti.Vector([0.0, 0.0])
 
-        # Distribution functions
+        # Physical constants
+        self.gravity = ti.Vector([0.0, -0.1])  # Gravity force
+        self.drag_coeff = 0.5  # Drag coefficient
+        self.restitution = 0.7  # Coefficient of restitution for collisions
+        self.fluid_density = 1.0  # Reference fluid density
+
+        # Fields
         self.f = ti.field(dtype=ti.f32, shape=(width, height, 9))
         self.f_temp = ti.field(dtype=ti.f32, shape=(width, height, 9))
-
-        # Macroscopic quantities
         self.rho = ti.field(dtype=ti.f32, shape=(width, height))
         self.vel = ti.Vector.field(2, dtype=ti.f32, shape=(width, height))
+        self.solid_mask = ti.field(dtype=ti.i32, shape=(width, height))
 
+        # D2Q9 lattice constants
+        self.c = ti.Vector.field(2, dtype=ti.i32, shape=9)
+        self.w = ti.field(dtype=ti.f32, shape=9)
+
+        # Initialize
         self.initialize_lattice()
         self.initialize_fields()
-        self.initialize_ball()
-
-    @ti.kernel
-    def initialize_ball(self):
-        self.ball_pos[None] = ti.Vector([self.width * 0.5, self.height * 0.8])
-        self.ball_vel[None] = ti.Vector([2.0, 0.0])  # Initial horizontal velocity
 
     @ti.kernel
     def initialize_lattice(self):
@@ -221,7 +227,7 @@ class LBMSolver:
         self.c[7] = ti.Vector([-1, -1])
         self.c[8] = ti.Vector([1, -1])
 
-        # Lattice weights
+        # D2Q9 weights
         self.w[0] = 4.0 / 9.0
         for i in ti.static(range(1, 5)):
             self.w[i] = 1.0 / 9.0
@@ -230,122 +236,249 @@ class LBMSolver:
 
     @ti.kernel
     def initialize_fields(self):
-        # Initialize with fluid at rest
         for i, j in ti.ndrange(self.width, self.height):
             self.rho[i, j] = 1.0
             self.vel[i, j] = ti.Vector([0.0, 0.0])
             for k in ti.static(range(9)):
-                self.f[i, j, k] = self.w[k]
+                self.f[i, j, k] = self.compute_equilibrium(1.0, ti.Vector([0.0, 0.0]), k)
+
+    @ti.func
+    def compute_equilibrium(self, rho: ti.f32, u: ti.template(), k: ti.i32) -> ti.f32:
+        cu = self.c[k].dot(u)
+        usqr = u.dot(u)
+        return self.w[k] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usqr)
 
     @ti.kernel
-    def update_ball(self):
-        # Update ball position and velocity
+    def update_solid_mask(self):
+        # Clear previous mask
+        for i, j in self.solid_mask:
+            self.solid_mask[i, j] = 0
+
+        # Update ball position in mask
+        ball_pos = self.ball_pos[None]
+        radius = self.ball_radius
+
+        for i, j in ti.ndrange(self.width, self.height):
+            dx = float(i) - ball_pos[0]
+            dy = float(j) - ball_pos[1]
+            if dx * dx + dy * dy <= radius * radius:
+                self.solid_mask[i, j] = 1
+    @ti.kernel
+    def compute_fluid_force(self):
+        """Compute fluid force on ball and store in ball_force field"""
+        force = ti.Vector([0.0, 0.0])
+        ball_pos = self.ball_pos[None]
+        ball_vel = self.ball_vel[None]
+
+        for i, j in ti.ndrange(self.width, self.height):
+            dx = float(i) - ball_pos[0]
+            dy = float(j) - ball_pos[1]
+            r2 = dx * dx + dy * dy
+
+            if r2 <= self.ball_radius * self.ball_radius:
+                # Relative velocity
+                rel_vel_x = self.vel[i, j][0] - ball_vel[0]
+                rel_vel_y = self.vel[i, j][1] - ball_vel[1]
+                rel_vel = ti.Vector([rel_vel_x, rel_vel_y])
+
+                # Normal vector
+                r = ti.sqrt(r2)
+                if r > 1e-6:
+                    normal = ti.Vector([dx/r, dy/r])
+
+                    # Pressure force
+                    pressure_force = normal * (self.rho[i, j] - 1.0) * self.cs2
+
+                    # Viscous force
+                    viscous_force = rel_vel * self.viscosity
+
+                    force += pressure_force + viscous_force
+
+        self.ball_force[None] = force
+
+    @ti.kernel
+    def update_ball(self, dt: ti.f32):
+        # Get current state
         pos = self.ball_pos[None]
         vel = self.ball_vel[None]
+        force = self.ball_force[None]
 
-        # Apply gravity
-        vel += self.gravity
+        # Update velocity with forces
+        vel += (force + self.gravity * self.ball_mass) * dt / self.ball_mass
+
+        # Apply drag
+        speed = ti.sqrt(vel[0] * vel[0] + vel[1] * vel[1])
+        if speed > 1e-6:
+            drag = -self.drag_coeff * speed * speed * vel / speed
+            vel += drag * dt
 
         # Update position
-        pos += vel
+        pos += vel * dt
 
-        # Boundary collisions with damping
+        # Handle wall collisions
         if pos[0] < self.ball_radius:
             pos[0] = self.ball_radius
-            vel[0] *= -self.restitution
-        if pos[0] > self.width - self.ball_radius:
-            pos[0] = self.width - self.ball_radius
-            vel[0] *= -self.restitution
+            vel[0] = -vel[0] * self.restitution
+        elif pos[0] > float(self.width) - self.ball_radius:
+            pos[0] = float(self.width) - self.ball_radius
+            vel[0] = -vel[0] * self.restitution
+
         if pos[1] < self.ball_radius:
             pos[1] = self.ball_radius
-            vel[1] *= -self.restitution
-        if pos[1] > self.height - self.ball_radius:
-            pos[1] = self.height - self.ball_radius
-            vel[1] *= -self.restitution
+            vel[1] = -vel[1] * self.restitution
+        elif pos[1] > float(self.height) - self.ball_radius:
+            pos[1] = float(self.height) - self.ball_radius
+            vel[1] = -vel[1] * self.restitution
 
-        # Fluid interaction - approximate drag force
-        ball_i = int(pos[0])
-        ball_j = int(pos[1])
-        if 0 <= ball_i < self.width and 0 <= ball_j < self.height:
-            fluid_vel = self.vel[ball_i, ball_j]
-            rel_vel = vel - fluid_vel
-            drag = -0.1 * rel_vel  # Simple drag model
-            vel += drag
-
-        # Update ball state
+        # Update fields
         self.ball_pos[None] = pos
         self.ball_vel[None] = vel
 
     @ti.kernel
-    def apply_ball_boundary(self):
-        # Apply no-slip boundary condition around the ball
+    def compute_fluid_force(self):
+        """Compute fluid force on ball and store in ball_force field"""
+        force = ti.Vector([0.0, 0.0])
+        ball_pos = self.ball_pos[None]
+        ball_vel = self.ball_vel[None]
+
+        for i, j in ti.ndrange(self.width, self.height):
+            dx = float(i) - ball_pos[0]
+            dy = float(j) - ball_pos[1]
+            r2 = dx * dx + dy * dy
+
+            if r2 <= self.ball_radius * self.ball_radius:
+                # Relative velocity
+                rel_vel = self.vel[i, j] - ball_vel
+
+                # Normal vector
+                r = ti.sqrt(r2)
+                if r > 1e-6:
+                    normal = ti.Vector([dx / r, dy / r])
+
+                    # Pressure force
+                    pressure_force = normal * (self.rho[i, j] - 1.0) * self.cs2
+
+                    # Viscous force
+                    viscous_force = rel_vel * self.viscosity
+
+                    force += pressure_force + viscous_force
+
+        self.ball_force[None] = force
+
+    @ti.kernel
+    def update_ball(self, dt: ti.f32):
+        # Get current position and velocity
         pos = self.ball_pos[None]
-        radius = self.ball_radius
+        vel = self.ball_vel[None]
 
-        for i, j in ti.ndrange((-int(radius) - 1, int(radius) + 2), (-int(radius) - 1, int(radius) + 2)):
-            x = int(pos[0]) + i
-            y = int(pos[1]) + j
+        # Update position
+        pos += vel * dt
 
-            if 0 <= x < self.width and 0 <= y < self.height:
-                dx = float(i)
-                dy = float(j)
-                d2 = dx * dx + dy * dy
+        # Handle wall collisions
+        if pos[0] < self.ball_radius:
+            pos[0] = self.ball_radius
+            vel[0] = -vel[0] * self.restitution
+        elif pos[0] > self.width - self.ball_radius:
+            pos[0] = self.width - self.ball_radius
+            vel[0] = -vel[0] * self.restitution
 
-                if d2 <= radius * radius:
-                    # Inside ball - set velocity to ball velocity
-                    self.vel[x, y] = self.ball_vel[None]
-                    # Adjust density for incompressibility
-                    self.rho[x, y] = 1.0
+        if pos[1] < self.ball_radius:
+            pos[1] = self.ball_radius
+            vel[1] = -vel[1] * self.restitution
+        elif pos[1] > self.height - self.ball_radius:
+            pos[1] = self.height - self.ball_radius
+            vel[1] = -vel[1] * self.restitution
+
+        # Update fields
+        self.ball_pos[None] = pos
+        self.ball_vel[None] = vel
 
     @ti.kernel
     def collide(self):
         for i, j in ti.ndrange(self.width, self.height):
-            # Calculate macroscopic quantities
-            rho = 0.0
-            vel = ti.Vector([0.0, 0.0])
-            for k in ti.static(range(9)):
-                rho += self.f[i, j, k]
-                vel += self.c[k] * self.f[i, j, k]
+            if not self.solid_mask[i, j]:
+                # Compute macroscopic quantities
+                rho = 0.0
+                momentum = ti.Vector([0.0, 0.0])
 
-            if rho > 0:
-                vel /= rho
+                for k in ti.static(range(9)):
+                    f = self.f[i, j, k]
+                    rho += f
+                    momentum += self.c[k] * f
 
-            # Store macroscopic quantities
-            self.rho[i, j] = rho
-            self.vel[i, j] = vel
+                # Update macroscopic fields
+                self.rho[i, j] = rho
+                if rho > 1e-10:
+                    self.vel[i, j] = momentum / rho
 
-            # Collision
-            for k in ti.static(range(9)):
-                cu = self.c[k].dot(vel)
-                usqr = vel.dot(vel)
-                feq = self.w[k] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usqr)
-                self.f_temp[i, j, k] = self.f[i, j, k] - self.omega * (self.f[i, j, k] - feq)
+                # BGK collision
+                for k in ti.static(range(9)):
+                    feq = self.compute_equilibrium(rho, self.vel[i, j], k)
+                    self.f_temp[i, j, k] = self.f[i, j, k] - self.omega * (self.f[i, j, k] - feq)
 
     @ti.kernel
     def stream(self):
         for i, j, k in self.f:
-            ni = (i + int(self.c[k][0])) % self.width
-            nj = (j + int(self.c[k][1])) % self.height
-            self.f[ni, nj, k] = self.f_temp[i, j, k]
+            if not self.solid_mask[i, j]:
+                ni = (i + self.c[k][0] + self.width) % self.width
+                nj = (j + self.c[k][1] + self.height) % self.height
+                self.f[ni, nj, k] = self.f_temp[i, j, k]
 
-        # Add density visualization calculation
-        for i, j in self.rho:
-            # Calculate velocity magnitude for smoke effect
-            vel_mag = ti.sqrt(self.vel[i, j][0] ** 2 + self.vel[i, j][1] ** 2)
-            # Adjust density based on velocity for better smoke visualization
-            self.rho[i, j] = ti.max(1.0 - vel_mag * 0.5, 0.0)
+    @ti.kernel
+    def apply_boundary_conditions(self):
+        # Bounce-back on solid boundaries (including ball)
+        for i, j in ti.ndrange(self.width, self.height):
+            if self.solid_mask[i, j]:
+                for k in ti.static(range(9)):
+                    k_opposite = k
+                    if k > 0:
+                        k_opposite = k - 1 if k % 2 == 1 else k + 1
+                    self.f[i, j, k_opposite] = self.f_temp[i, j, k]
 
-    def step(self):
-        # Update ball position
-        self.update_ball()
+    @ti.kernel
+    def apply_force(self, pos_x: ti.f32, pos_y: ti.f32, force_x: ti.f32, force_y: ti.f32):
+        force_radius = 5.0
+        force_magnitude = 0.1
+
+        for i, j in ti.ndrange((-10, 11), (-10, 11)):
+            x = int(pos_x + i)
+            y = int(pos_y + j)
+
+            if 0 <= x < self.width and 0 <= y < self.height and not self.solid_mask[x, y]:
+                r2 = float(i * i + j * j)
+                force_factor = force_magnitude * ti.exp(-r2 / (2.0 * force_radius * force_radius))
+
+                for k in ti.static(range(9)):
+                    cu = self.c[k].dot(ti.Vector([force_x, force_y]))
+                    self.f[x, y, k] += self.w[k] * force_factor * cu
+
+    def step(self, mouse_pos=None, mouse_down=False):
+        dt = 1.0  # Time step
+
+        # Update ball position in solid mask
+        self.update_solid_mask()
 
         # LBM steps
         self.collide()
         self.stream()
+        self.apply_boundary_conditions()
 
-        # Apply ball boundary conditions
-        self.apply_ball_boundary()
+        # Compute and apply forces to ball
+        self.compute_fluid_force()
+        self.update_ball(dt)
 
+        # Apply mouse force
+        if mouse_down and mouse_pos is not None:
+            force_x = 0.0
+            force_y = 0.1  # Upward force
+            self.apply_force(mouse_pos[0], mouse_pos[1], force_x, force_y)
+
+    def get_ball_info(self):
+        return {
+            'pos': self.ball_pos[None].to_numpy(),
+            'radius': self.ball_radius,
+            'velocity': self.ball_vel[None].to_numpy()
+        }
 
 class SimulationManager:
     def __init__(self, width, height, initial_brush_size=20.0):
