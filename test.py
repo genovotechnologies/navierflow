@@ -29,56 +29,54 @@ ti.init(arch=ti.cpu)
 
 @ti.data_oriented
 class FluidSimulation:
-    @ti.data_oriented
-    class FluidSimulation:
-        def __init__(self, nx=256, ny=256, method='eulerian'):
-            self.params = SimulationParams()
-            self.nx = nx
-            self.ny = ny
-            self.method = method
+    def __init__(self, nx=256, ny=256, method='eulerian'):
+        self.params = SimulationParams()
+        self.nx = nx
+        self.ny = ny
+        self.method = method
 
-            # Common fields for both methods
-            self.velocity = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
-            self.density = ti.field(dtype=ti.f32, shape=(nx, ny))
-            self.pressure = ti.field(dtype=ti.f32, shape=(nx, ny))
-            self.divergence = ti.field(dtype=ti.f32, shape=(nx, ny))
-            self.temperature = ti.field(dtype=ti.f32, shape=(nx, ny))
-            self.vorticity = ti.field(dtype=ti.f32, shape=(nx, ny))
+        # Common fields for both methods
+        self.velocity = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
+        self.density = ti.field(dtype=ti.f32, shape=(nx, ny))
+        self.pressure = ti.field(dtype=ti.f32, shape=(nx, ny))
+        self.divergence = ti.field(dtype=ti.f32, shape=(nx, ny))
+        self.temperature = ti.field(dtype=ti.f32, shape=(nx, ny))
+        self.vorticity = ti.field(dtype=ti.f32, shape=(nx, ny))
 
-            # Mouse interaction
-            self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
-            self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
+        # Mouse interaction
+        self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
+        self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
 
-            if method == 'lbm':
-                self._init_lbm_fields()
+        if method == 'lbm':
+            self._init_lbm_fields()
 
-            self.initialize_fields()
+        self.initialize_fields()
 
-        def _init_lbm_fields(self):
-            # Ball properties
-            self.ball_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
-            self.ball_vel = ti.Vector.field(2, dtype=ti.f32, shape=())
-            self.ball_force = ti.Vector.field(2, dtype=ti.f32, shape=())
+    def _init_lbm_fields(self):
+        # Ball properties
+        self.ball_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
+        self.ball_vel = ti.Vector.field(2, dtype=ti.f32, shape=())
+        self.ball_force = ti.Vector.field(2, dtype=ti.f32, shape=())
 
-            # Initialize ball position
-            self.ball_pos.fill([self.nx // 4, self.ny // 2])
-            self.ball_vel.fill([0, 0])
-            self.ball_force.fill([0, 0])
+        # Initialize ball position
+        self.ball_pos.fill([self.nx // 4, self.ny // 2])
+        self.ball_vel.fill([0, 0])
+        self.ball_force.fill([0, 0])
 
-            # LBM fields
-            self.f = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
-            self.f_next = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
-            self.feq = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
-            self.w = ti.field(dtype=ti.f32, shape=9)
-            self.e = ti.Matrix.field(2, 9, dtype=ti.f32, shape=())
+        # LBM fields
+        self.f = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
+        self.f_next = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
+        self.feq = ti.field(dtype=ti.f32, shape=(self.nx, self.ny, 9))
+        self.w = ti.field(dtype=ti.f32, shape=9)
+        self.e = ti.Matrix.field(2, 9, dtype=ti.f32, shape=())
 
-            # Initialize lattice velocities
-            self.e.from_numpy(np.array([
-                [0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
-                [1, 1], [-1, 1], [-1, -1], [1, -1]
-            ], dtype=np.float32).T)
+        # Initialize lattice velocities
+        self.e.from_numpy(np.array([
+            [0, 0], [1, 0], [0, 1], [-1, 0], [0, -1],
+            [1, 1], [-1, 1], [-1, -1], [1, -1]
+        ], dtype=np.float32).T)
 
-            self._initialize_lbm()
+        self._initialize_lbm()
 
     @ti.kernel
     def initialize_grid(self):
@@ -519,7 +517,7 @@ class FluidSimulation:
         # Update velocity field
         for i, j in self.velocity:
             if 0 < i < self.nx - 1 and 0 < j < self.ny - 1:
-                self.velocity[i, j] = self.velocity_tmp[i, j]
+                self.velocity[i, j] = self.velocity[i, j]
 
         # Advect density field
         for i, j in self.density:
