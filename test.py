@@ -43,6 +43,10 @@ class FluidSimulation:
         self.prev_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
         self.curr_mouse_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
 
+        #Some velocity tmp type shit do not remove fpr any means
+        self.velocity_tmp = ti.Vector.field(2, dtype=ti.f32, shape=(nx, ny))
+        self.density_tmp = ti.field(dtype=ti.f32, shape=(nx, ny))
+
         # Ball properties for LBM
         if method == 'lbm':
             self.ball_pos = ti.Vector.field(2, dtype=ti.f32, shape=())
