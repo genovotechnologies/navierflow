@@ -43,7 +43,7 @@ class EulerianSolver:
     def __init__(self, width, height, brush_size=20.0):
         self.width = width
         self.height = height
-        self.force_radius = brush_size  # Initialize with brush size
+        self.force_radius = brush_size  # Use provided brush size
 
         # Core fluid fields
         self.velocity = ti.Vector.field(2, dtype=ti.f32, shape=(width, height))
@@ -60,7 +60,7 @@ class EulerianSolver:
         self.num_iterations = 50
         self.velocity_dissipation = 0.999
         self.density_dissipation = 0.995
-        self.force_radius = 25.0
+        # Removed the hard-coded overwrite: self.force_radius = 25.0
         self.force_strength = 70.0
 
         self.initialize_fields()
@@ -107,9 +107,13 @@ class EulerianSolver:
 
     @ti.func
     def sample_field(self, field: ti.template(), pos: ti.template()):
-        x0, y0 = int(pos[0]), int(pos[1])
-        x1, y1 = x0 + 1, y0 + 1
-        fx, fy = pos[0] - x0, pos[1] - y0
+        x0 = int(pos[0])
+        y0 = int(pos[1])
+        # Clamp x1 and y1 to avoid out-of-bound access
+        x1 = ti.min(x0 + 1, self.width - 1)
+        y1 = ti.min(y0 + 1, self.height - 1)
+        fx = pos[0] - x0
+        fy = pos[1] - y0
 
         return (field[x0, y0] * (1 - fx) * (1 - fy) +
                 field[x1, y0] * fx * (1 - fy) +
@@ -157,8 +161,7 @@ class EulerianSolver:
             self.add_force_and_density(mouse_pos[0], mouse_pos[1], velocity[0], velocity[1])
             self.prev_mouse_pos = current_pos
         else:
-            self.prev_mouse_pos = ti.Vector([mouse_pos[0], mouse_pos[1]]) if mouse_pos is not None else ti.Vector(
-                [0.0, 0.0])
+            self.prev_mouse_pos = ti.Vector([mouse_pos[0], mouse_pos[1]]) if mouse_pos is not None else ti.Vector([0.0, 0.0])
 
         self.advect(self.velocity, self.velocity_dissipation)
         self.advect(self.density, self.density_dissipation)
@@ -254,9 +257,9 @@ class LBMSolver:
                 momentum = ti.Vector([0.0, 0.0])
 
                 for k in ti.static(range(9)):
-                    f = self.f[i, j, k]
-                    rho += f
-                    momentum += self.c[k] * f
+                    f_val = self.f[i, j, k]
+                    rho += f_val
+                    momentum += self.c[k] * f_val
 
                 self.rho[i, j] = rho
                 if rho > 1e-10:
@@ -328,12 +331,14 @@ class LBMSolver:
             self.ball_pos[None][1] = self.ball_radius
             self.ball_vel[None][1] = -self.ball_vel[None][1] * self.restitution
 
+    # Fixed get_ball_info method
     def get_ball_info(self):
         return {
             'pos': self.ball_pos[None].to_numpy(),
             'radius': self.ball_radius,
             'velocity': self.ball_vel[None].to_numpy()
         }
+
 
 class SimulationManager:
     def __init__(self, width, height, initial_brush_size=20.0):
@@ -415,12 +420,8 @@ class GUIManager:
                     simulation.update_brush_size(new_brush_size)
 
         # Display simulation field
-        # Get field to display
         field = simulation.get_display_field()
-
-        # Normalize field for display
         if field is not None:
-            # Ensure we have valid min/max values
             field_min = np.min(field)
             field_max = np.max(field)
             if field_max > field_min:
@@ -428,35 +429,24 @@ class GUIManager:
             else:
                 field = np.zeros_like(field)
 
-            # Create RGB image
             if simulation.method == "lbm":
-                # Create smoke effect with better contrast
                 img = np.ones((self.height, self.width, 3), dtype=np.float32)
-
-                # Apply smoke effect with better visibility
-                smoke = 1.0 - field[:, :, np.newaxis] * 0.8  # Increased contrast
-                img *= smoke  # Apply to all channels for grey smoke
-
-                # Add slight blue tint to the smoke
-                img[:, :, 2] *= 1.1  # Slightly more blue
-                img = np.clip(img, 0, 1)  # Ensure values stay in valid range
-
-                # Draw ball
+                smoke = 1.0 - field[:, :, np.newaxis] * 0.8
+                img *= smoke
+                img[:, :, 2] *= 1.1
+                img = np.clip(img, 0, 1)
                 ball_info = simulation.get_ball_info()
                 if ball_info:
                     # [Ball drawing code remains the same]
                     pass
             else:
-                # Eulerian method visualization remains the same
                 img = np.zeros((self.height, self.width, 3), dtype=np.float32)
-                img[:, :, 2] = field  # Blue channel
+                img[:, :, 2] = field
 
             self.canvas.set_image(img)
-
         self.window.show()
 
     def draw_line(self, img, x0, y0, x1, y1, color):
-        """Draw a line on the image using Bresenham's algorithm"""
         dx = abs(x1 - x0)
         dy = abs(y1 - y0)
         x, y = x0, y0
@@ -495,24 +485,18 @@ def main():
 
     while gui_manager.window.running:
         if not start_screen.start_simulation:
-            # Show start screen
             start_screen.render()
             gui_manager.window.show()
         else:
-            # Initialize simulation if not done yet
             if sim_manager is None:
                 sim_manager = SimulationManager(width, height, start_screen.brush_size)
                 sim_manager.method = start_screen.selected_method
 
-            # Handle input
             mouse_pos = gui_manager.window.get_cursor_pos()
             mouse_pos = (mouse_pos[0] * width, mouse_pos[1] * height)
             mouse_down = gui_manager.window.is_pressed(ti.ui.LMB)
 
-            # Update simulation
             sim_manager.update(mouse_pos, mouse_down)
-
-            # Render
             gui_manager.render(sim_manager)
 
 
