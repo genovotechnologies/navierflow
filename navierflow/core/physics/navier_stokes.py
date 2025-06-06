@@ -271,4 +271,93 @@ class NavierStokesSolver:
     def export_state(self, filename: str):
         """Export simulation state to file"""
         # Implementation for state export
-        pass 
+        pass
+
+class NavierStokes:
+    def __init__(self, viscosity: float, density: float):
+        """
+        Initialize Navier-Stokes solver
+        
+        Args:
+            viscosity: Fluid viscosity
+            density: Fluid density
+        """
+        self.viscosity = viscosity
+        self.density = density
+        
+    def momentum_equation(self, 
+                         velocity: np.ndarray,
+                         pressure: np.ndarray,
+                         force: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Compute momentum equation terms
+        
+        Args:
+            velocity: Velocity field
+            pressure: Pressure field
+            force: External force field (optional)
+            
+        Returns:
+            Momentum equation terms
+        """
+        # Convective term
+        convective = np.gradient(velocity * velocity)
+        
+        # Pressure gradient
+        pressure_grad = np.gradient(pressure)
+        
+        # Viscous term
+        laplacian = np.gradient(np.gradient(velocity))
+        viscous = self.viscosity * laplacian
+        
+        # Combine terms
+        momentum = convective + pressure_grad/self.density - viscous
+        
+        if force is not None:
+            momentum += force/self.density
+            
+        return momentum
+    
+    def continuity_equation(self, velocity: np.ndarray) -> float:
+        """
+        Compute continuity equation (mass conservation)
+        
+        Args:
+            velocity: Velocity field
+            
+        Returns:
+            Divergence of velocity field
+        """
+        return np.sum(np.gradient(velocity))
+    
+    def solve_step(self,
+                   velocity: np.ndarray,
+                   pressure: np.ndarray,
+                   dt: float,
+                   force: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Perform one time step of Navier-Stokes simulation
+        
+        Args:
+            velocity: Current velocity field
+            pressure: Current pressure field
+            dt: Time step
+            force: External force field (optional)
+            
+        Returns:
+            Updated velocity and pressure fields
+        """
+        # Compute momentum terms
+        momentum = self.momentum_equation(velocity, pressure, force)
+        
+        # Update velocity
+        new_velocity = velocity + dt * momentum
+        
+        # Project velocity to satisfy continuity
+        divergence = self.continuity_equation(new_velocity)
+        pressure_correction = -divergence / dt
+        
+        # Update pressure
+        new_pressure = pressure + pressure_correction
+        
+        return new_velocity, new_pressure 

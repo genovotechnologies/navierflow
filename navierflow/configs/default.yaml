@@ -86,4 +86,100 @@ log_frequency: 10
 # Output configuration
 output_dir: "outputs"
 save_predictions: true
-export_format: "h5" 
+export_format: "h5"
+
+# Simulation parameters
+simulation:
+  # Time stepping
+  time_step: 0.001
+  max_time: 10.0
+  save_interval: 0.1
+  
+  # Mesh parameters
+  mesh:
+    type: "structured"  # or "unstructured"
+    dimensions: 2  # or 3
+    resolution: [100, 100]  # [nx, ny] for 2D, [nx, ny, nz] for 3D
+    
+  # Physics parameters
+  physics:
+    # Fluid properties
+    fluid:
+      density: 1.0
+      viscosity: 0.001
+      thermal_conductivity: 0.6
+      specific_heat: 4186.0
+      
+    # Boundary conditions
+    boundaries:
+      velocity:
+        type: "no-slip"  # or "slip", "periodic"
+        value: [0.0, 0.0]  # [u, v] for 2D, [u, v, w] for 3D
+      temperature:
+        type: "dirichlet"  # or "neumann", "periodic"
+        value: 293.15  # Kelvin
+      pressure:
+        type: "neumann"  # or "dirichlet", "periodic"
+        value: 101325.0  # Pascal
+        
+    # Initial conditions
+    initial:
+      velocity: [0.0, 0.0]  # [u, v] for 2D, [u, v, w] for 3D
+      temperature: 293.15  # Kelvin
+      pressure: 101325.0  # Pascal
+      
+# Solver parameters
+solver:
+  # Linear solver
+  linear:
+    type: "gmres"  # or "bicgstab", "cg"
+    tolerance: 1e-6
+    max_iterations: 1000
+    preconditioner: "ilu"  # or "jacobi", "none"
+    
+  # Nonlinear solver
+  nonlinear:
+    type: "newton"  # or "picard"
+    tolerance: 1e-6
+    max_iterations: 50
+    
+# Output parameters
+output:
+  # File formats
+  formats:
+    - "vtk"
+    - "csv"
+    - "hdf5"
+    
+  # Visualization
+  visualization:
+    enabled: true
+    style: "modern"  # or "classic"
+    colormap: "viridis"  # or "plasma", "inferno", "magma"
+    show_mesh: false
+    save_figures: true
+    
+  # Logging
+  logging:
+    level: "INFO"  # or "DEBUG", "WARNING", "ERROR"
+    file: "simulation.log"
+    console: true
+    
+# Performance parameters
+performance:
+  # Parallel computing
+  parallel:
+    enabled: true
+    num_threads: 4
+    num_processes: 1
+    
+  # Memory management
+  memory:
+    max_ram: 8192  # MB
+    cache_size: 1024  # MB
+    
+  # Optimization
+  optimization:
+    level: 2  # 0-3
+    vectorization: true
+    openmp: true 

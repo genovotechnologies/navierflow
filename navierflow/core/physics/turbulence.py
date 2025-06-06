@@ -3,6 +3,19 @@ import numpy as np
 from typing import Dict, Optional, Tuple
 from abc import ABC, abstractmethod
 import logging
+from dataclasses import dataclass
+
+@dataclass
+class TurbulenceParameters:
+    """Parameters for turbulence models"""
+    c_mu: float = 0.09
+    c_epsilon1: float = 1.44
+    c_epsilon2: float = 1.92
+    sigma_k: float = 1.0
+    sigma_epsilon: float = 1.3
+    c_omega1: float = 0.52
+    c_omega2: float = 0.072
+    sigma_omega: float = 0.5
 
 class TurbulenceModel(ABC):
     """Abstract base class for turbulence models"""
@@ -26,17 +39,13 @@ class TurbulenceModel(ABC):
 class KEpsilonModel(TurbulenceModel):
     """Standard k-ε turbulence model implementation"""
     
-    def __init__(self, width: int, height: int, dtype: ti.DataType = ti.f32):
+    def __init__(self, width: int, height: int, dtype: ti.DataType = ti.f32, params: Optional[TurbulenceParameters] = None):
         self.width = width
         self.height = height
         self.dtype = dtype
         
         # Model constants
-        self.C_mu = 0.09
-        self.C_1 = 1.44
-        self.C_2 = 1.92
-        self.sigma_k = 1.0
-        self.sigma_eps = 1.3
+        self.params = params or TurbulenceParameters()
         
         # Fields
         self.k = ti.field(dtype=dtype, shape=(width, height))  # Turbulent kinetic energy
@@ -68,8 +77,8 @@ class KEpsilonModel(TurbulenceModel):
             l = 0.07 * min(self.width, self.height)  # Length scale (7% of domain)
             
             self.k[i, j] = 1.5 * (U_ref * I) ** 2
-            self.epsilon[i, j] = self.C_mu ** 0.75 * self.k[i, j] ** 1.5 / l
-            self.nu_t[i, j] = self.C_mu * self.k[i, j] ** 2 / self.epsilon[i, j]
+            self.epsilon[i, j] = self.params.c_mu ** 0.75 * self.k[i, j] ** 1.5 / l
+            self.nu_t[i, j] = self.params.c_mu * self.k[i, j] ** 2 / self.epsilon[i, j]
 
     @ti.kernel
     def compute_production_terms(self, velocity: ti.template(), strain_rate: ti.template()):
@@ -83,7 +92,7 @@ class KEpsilonModel(TurbulenceModel):
                 )
                 
                 # Production of dissipation
-                self.P_eps[i, j] = self.C_1 * self.epsilon[i, j] / self.k[i, j] * self.P_k[i, j]
+                self.P_eps[i, j] = self.params.c_epsilon1 * self.epsilon[i, j] / self.k[i, j] * self.P_k[i, j]
 
     @ti.kernel
     def update_wall_functions(self, velocity: ti.template()):
@@ -112,7 +121,7 @@ class KEpsilonModel(TurbulenceModel):
                     self.epsilon[i, j] = 2.0 * nu * self.k[i, j] / (y * y)
                 else:
                     # Log-law region
-                    self.k[i, j] = self.u_tau[i, j]**2 / ti.sqrt(self.C_mu)
+                    self.k[i, j] = self.u_tau[i, j]**2 / ti.sqrt(self.params.c_mu)
                     self.epsilon[i, j] = self.u_tau[i, j]**3 / (kappa * y)
 
     @ti.kernel
@@ -120,7 +129,7 @@ class KEpsilonModel(TurbulenceModel):
         """Update eddy viscosity field"""
         for i, j in self.nu_t:
             if self.k[i, j] > 0.0 and self.epsilon[i, j] > 0.0:
-                self.nu_t[i, j] = self.C_mu * self.k[i, j]**2 / self.epsilon[i, j]
+                self.nu_t[i, j] = self.params.c_mu * self.k[i, j]**2 / self.epsilon[i, j]
             else:
                 self.nu_t[i, j] = 0.0
 
@@ -133,7 +142,7 @@ class KEpsilonModel(TurbulenceModel):
                 conv_k = self.compute_convection(self.k, velocity, i, j)
                 
                 # Diffusion
-                diff_k = self.compute_diffusion(self.k, self.nu_t, i, j, self.sigma_k)
+                diff_k = self.compute_diffusion(self.k, self.nu_t, i, j, self.params.sigma_k)
                 
                 # Production and dissipation
                 prod_k = self.P_k[i, j]
@@ -152,12 +161,12 @@ class KEpsilonModel(TurbulenceModel):
                 conv_eps = self.compute_convection(self.epsilon, velocity, i, j)
                 
                 # Diffusion
-                diff_eps = self.compute_diffusion(self.epsilon, self.nu_t, i, j, self.sigma_eps)
+                diff_eps = self.compute_diffusion(self.epsilon, self.nu_t, i, j, self.params.sigma_epsilon)
                 
                 # Production and destruction
                 if self.k[i, j] > 0.0:
-                    prod_eps = self.C_1 * self.epsilon[i, j] / self.k[i, j] * self.P_k[i, j]
-                    dest_eps = self.C_2 * self.epsilon[i, j]**2 / self.k[i, j]
+                    prod_eps = self.params.c_epsilon1 * self.epsilon[i, j] / self.k[i, j] * self.P_k[i, j]
+                    dest_eps = self.params.c_epsilon2 * self.epsilon[i, j]**2 / self.k[i, j]
                 else:
                     prod_eps = 0.0
                     dest_eps = 0.0
@@ -241,4 +250,140 @@ class KEpsilonModel(TurbulenceModel):
 
     def get_metrics(self) -> Dict:
         """Return performance metrics"""
-        return self.metrics.copy() 
+        return self.metrics.copy()
+
+    def compute_eddy_viscosity(self,
+                             k: ti.template(),
+                             epsilon: Optional[ti.template()] = None,
+                             omega: Optional[ti.template()] = None) -> ti.template():
+        """
+        Compute eddy viscosity
+        
+        Args:
+            k: Turbulent kinetic energy
+            epsilon: Dissipation rate (for k-epsilon model)
+            omega: Specific dissipation rate (for k-omega model)
+            
+        Returns:
+            Eddy viscosity
+        """
+        if epsilon is None:
+            raise ValueError("epsilon required for k-epsilon model")
+        return self.params.c_mu * k**2 / epsilon
+
+    def compute_production(self,
+                          velocity_grad: ti.template(),
+                          k: ti.template(),
+                          eddy_viscosity: ti.template()) -> ti.template():
+        """
+        Compute turbulent kinetic energy production
+        
+        Args:
+            velocity_grad: Velocity gradient tensor
+            k: Turbulent kinetic energy
+            eddy_viscosity: Eddy viscosity
+            
+        Returns:
+            Production term
+        """
+        # Compute strain rate tensor
+        S = 0.5 * (velocity_grad + velocity_grad.transpose(0, 2, 1))
+        
+        # Compute production
+        P = eddy_viscosity * ti.sum(S * S, axis=(1, 2))
+        
+        return P
+        
+    def solve_k_epsilon(self,
+                       k: ti.template(),
+                       epsilon: ti.template(),
+                       velocity_grad: ti.template(),
+                       dt: float) -> Tuple[ti.template(), ti.template()]:
+        """
+        Solve k-epsilon equations
+        
+        Args:
+            k: Turbulent kinetic energy
+            epsilon: Dissipation rate
+            velocity_grad: Velocity gradient tensor
+            dt: Time step
+            
+        Returns:
+            Updated k and epsilon
+        """
+        # Compute eddy viscosity
+        eddy_viscosity = self.compute_eddy_viscosity(k, epsilon)
+        
+        # Compute production
+        P = self.compute_production(velocity_grad, k, eddy_viscosity)
+        
+        # Update k
+        dk = (P - epsilon) * dt
+        new_k = k + dk
+        
+        # Update epsilon
+        depsilon = (self.params.c_epsilon1 * P * epsilon / k -
+                   self.params.c_epsilon2 * epsilon**2 / k) * dt
+        new_epsilon = epsilon + depsilon
+        
+        return new_k, new_epsilon
+        
+    def solve_k_omega(self,
+                     k: ti.template(),
+                     omega: ti.template(),
+                     velocity_grad: ti.template(),
+                     dt: float) -> Tuple[ti.template(), ti.template()]:
+        """
+        Solve k-omega equations
+        
+        Args:
+            k: Turbulent kinetic energy
+            omega: Specific dissipation rate
+            velocity_grad: Velocity gradient tensor
+            dt: Time step
+            
+        Returns:
+            Updated k and omega
+        """
+        # Compute eddy viscosity
+        eddy_viscosity = self.compute_eddy_viscosity(k, omega=omega)
+        
+        # Compute production
+        P = self.compute_production(velocity_grad, k, eddy_viscosity)
+        
+        # Update k
+        dk = (P - self.params.c_omega2 * k * omega) * dt
+        new_k = k + dk
+        
+        # Update omega
+        domega = (self.params.c_omega1 * P * omega / k -
+                 self.params.c_omega2 * omega**2) * dt
+        new_omega = omega + domega
+        
+        return new_k, new_omega
+        
+    def compute_wall_functions(self,
+                             y_plus: ti.template(),
+                             u_tau: ti.template()) -> Tuple[ti.template(), ti.template()]:
+        """
+        Compute wall functions for near-wall treatment
+        
+        Args:
+            y_plus: Wall distance in wall units
+            u_tau: Friction velocity
+            
+        Returns:
+            Wall functions for k and epsilon/omega
+        """
+        # Van Driest damping function
+        A_plus = 26.0
+        damping = 1.0 - ti.exp(-y_plus / A_plus)
+        
+        # Wall functions
+        k_wall = u_tau**2 / ti.sqrt(self.params.c_mu)
+        
+        if epsilon is None:
+            raise ValueError("epsilon required for k-epsilon model")
+        epsilon_wall = u_tau**3 / (0.41 * y_plus)
+        
+        return k_wall * damping, epsilon_wall * damping 

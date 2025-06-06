@@ -292,4 +292,82 @@ class HeatTransferModel:
 
     def get_metrics(self) -> Dict:
         """Return performance metrics"""
-        return self.metrics.copy() 
+        return self.metrics.copy()
+
+class HeatTransfer:
+    def __init__(self, thermal_conductivity: float, specific_heat: float, density: float):
+        """
+        Initialize heat transfer solver
+        
+        Args:
+            thermal_conductivity: Material thermal conductivity
+            specific_heat: Material specific heat capacity
+            density: Material density
+        """
+        self.thermal_conductivity = thermal_conductivity
+        self.specific_heat = specific_heat
+        self.density = density
+        
+    def heat_equation(self,
+                     temperature: np.ndarray,
+                     heat_source: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Compute heat equation terms
+        
+        Args:
+            temperature: Temperature field
+            heat_source: Heat source term (optional)
+            
+        Returns:
+            Heat equation terms
+        """
+        # Thermal diffusivity
+        alpha = self.thermal_conductivity / (self.density * self.specific_heat)
+        
+        # Heat conduction term
+        laplacian = np.gradient(np.gradient(temperature))
+        conduction = alpha * laplacian
+        
+        # Combine terms
+        heat_eq = conduction
+        
+        if heat_source is not None:
+            heat_eq += heat_source / (self.density * self.specific_heat)
+            
+        return heat_eq
+    
+    def solve_step(self,
+                   temperature: np.ndarray,
+                   dt: float,
+                   heat_source: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Perform one time step of heat transfer simulation
+        
+        Args:
+            temperature: Current temperature field
+            dt: Time step
+            heat_source: Heat source term (optional)
+            
+        Returns:
+            Updated temperature field
+        """
+        # Compute heat equation terms
+        heat_eq = self.heat_equation(temperature, heat_source)
+        
+        # Update temperature
+        new_temperature = temperature + dt * heat_eq
+        
+        return new_temperature
+    
+    def compute_heat_flux(self, temperature: np.ndarray) -> np.ndarray:
+        """
+        Compute heat flux using Fourier's law
+        
+        Args:
+            temperature: Temperature field
+            
+        Returns:
+            Heat flux vector field
+        """
+        temperature_grad = np.gradient(temperature)
+        return -self.thermal_conductivity * temperature_grad 

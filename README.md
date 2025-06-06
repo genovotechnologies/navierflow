@@ -201,13 +201,13 @@ NavierFlow implements industry-standard security measures:
 This software is protected by copyright law and international treaties. Unauthorized reproduction or distribution of this software, or any portion of it, may result in severe civil and criminal penalties, and will be prosecuted to the maximum extent possible under law.
 
 ## Contact
-- Sales: sales@yourcompany.com
-- Support: support@yourcompany.com
-- Website: https://www.navierflow.com
+- Sales: sales@genovotech.com
+- Support: support@genovotech.com
+- Website: https://www.genovotech.com
 
 ---
-© 2024 [Your Company Name]. All rights reserved.
-NavierFlow™ is a trademark of [Your Company Name].
+© 2024 Genovo Technologies. All rights reserved.
+NavierFlow™ is a trademark of Genovo Technologies.
 
 ## Features
 
