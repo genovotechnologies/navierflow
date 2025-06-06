@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from navierflow.core.physics.fluid import FluidFlow
+from navierflow.core.physics.turbulence import TurbulentFlow
 from navierflow.core.numerics.solver import Solver
 from navierflow.core.mesh.generation import MeshGenerator
 from navierflow.visualization.renderer import Renderer, VisualizationConfig
@@ -13,7 +13,7 @@ from navierflow.configs.settings import ConfigManager, SimulationConfig
 def main():
     # Initialize logger
     logger = SimulationLogger(
-        log_file="lid_driven_cavity.log",
+        log_file="turbulent_flow.log",
         level="INFO",
         stream=True
     )
@@ -30,23 +30,23 @@ def main():
     # Initialize config manager
     config = SimulationConfig(
         physics={
-            "density": 1.0,
-            "viscosity": 0.1,
-            "gravity": (0.0, 0.0, 0.0)
+            "model_type": "k_epsilon",
+            "reynolds_number": 10000.0,
+            "turbulent_intensity": 0.05
         },
         numerical={
-            "method": "explicit",
+            "method": "implicit",
             "time_step": 0.001,
             "max_steps": 1000,
             "tolerance": 1e-6
         },
         mesh={
             "type": "structured",
-            "dimension": 2,
-            "resolution": (100, 100)
+            "dimension": 3,
+            "resolution": (50, 50, 50)
         },
         boundary={
-            "type": "no_slip",
+            "type": "wall",
             "value": 0.0
         },
         output={
@@ -61,7 +61,7 @@ def main():
             "use_gpu": False
         },
         visualization={
-            "type": "surface",
+            "type": "volume",
             "colormap": "viridis",
             "background_color": "white",
             "show_axes": True,
@@ -79,7 +79,7 @@ def main():
     
     try:
         # Start simulation
-        logger.start_simulation("Lid-driven cavity flow simulation started")
+        logger.start_simulation("Turbulent flow simulation started")
         
         # Create output directory
         manager.create_output_dir()
@@ -88,26 +88,26 @@ def main():
         with monitor.measure_time("mesh_generation"):
             mesh = MeshGenerator(
                 mesh_type="structured",
-                dimension=2,
-                resolution=(100, 100)
+                dimension=3,
+                resolution=(50, 50, 50)
             )
             
             # Generate mesh
             mesh = mesh.generate_structured_mesh(
-                bounds=((0, 0), (1, 1)),
-                periodic=(False, False)
+                bounds=((0, 0, 0), (1, 1, 1)),
+                periodic=(False, False, False)
             )
             
-        # Initialize fluid flow
-        fluid = FluidFlow(
-            density=1.0,
-            viscosity=0.1,
-            gravity=(0.0, 0.0, 0.0)
+        # Initialize turbulent flow
+        turbulent = TurbulentFlow(
+            model_type="k_epsilon",
+            reynolds_number=10000.0,
+            turbulent_intensity=0.05
         )
         
         # Initialize solver
         solver = Solver(
-            method="explicit",
+            method="implicit",
             time_step=0.001,
             max_steps=1000,
             tolerance=1e-6
@@ -115,7 +115,7 @@ def main():
         
         # Initialize renderer
         renderer = Renderer(VisualizationConfig(
-            type="surface",
+            type="volume",
             colormap="viridis",
             background_color="white",
             show_axes=True,
@@ -129,89 +129,95 @@ def main():
         ))
         
         # Initial condition
-        velocity = np.zeros((100, 100, 2))
-        velocity[-1, :, 0] = 1.0  # Lid velocity
+        velocity = np.zeros((50, 50, 50, 3))
+        velocity[..., 0] = 1.0  # Uniform flow in x-direction
         
         # Solve
         with monitor.measure_time("solving"):
             solution = solver.solve(velocity)
             
-        # Compute pressure
-        with monitor.measure_time("pressure_computation"):
-            pressure = fluid.compute_pressure(solution)
+        # Compute turbulent kinetic energy
+        with monitor.measure_time("tke_computation"):
+            tke = turbulent.compute_turbulent_kinetic_energy(solution)
             
-        # Compute vorticity
-        with monitor.measure_time("vorticity_computation"):
-            vorticity = fluid.compute_vorticity(solution)
+        # Compute dissipation rate
+        with monitor.measure_time("dissipation_computation"):
+            dissipation = turbulent.compute_dissipation_rate(solution)
             
-        # Compute strain rate
-        with monitor.measure_time("strain_rate_computation"):
-            strain_rate = fluid.compute_strain_rate(solution)
+        # Compute eddy viscosity
+        with monitor.measure_time("eddy_viscosity_computation"):
+            eddy_viscosity = turbulent.compute_eddy_viscosity(
+                tke,
+                dissipation
+            )
             
-        # Compute energy
-        with monitor.measure_time("energy_computation"):
-            energy = fluid.compute_energy(solution)
+        # Compute turbulent stress
+        with monitor.measure_time("turbulent_stress_computation"):
+            turbulent_stress = turbulent.compute_turbulent_stress(
+                solution,
+                eddy_viscosity
+            )
             
         # Validate results
         with monitor.measure_time("validation"):
-            # Validate pressure
+            # Validate turbulent kinetic energy
             validator.validate_parameter(
-                name="pressure",
-                value=pressure.mean(),
-                expected=0.0,
+                name="tke",
+                value=tke.mean(),
+                expected=0.05,
                 tolerance=1e-6
             )
             
-            # Validate vorticity
+            # Validate dissipation rate
             validator.validate_parameter(
-                name="vorticity",
-                value=vorticity.mean(),
-                expected=0.0,
+                name="dissipation",
+                value=dissipation.mean(),
+                expected=0.1,
                 tolerance=1e-6
             )
             
-            # Validate strain rate
+            # Validate eddy viscosity
             validator.validate_parameter(
-                name="strain_rate",
-                value=strain_rate.mean(),
-                expected=0.0,
+                name="eddy_viscosity",
+                value=eddy_viscosity.mean(),
+                expected=0.1,
                 tolerance=1e-6
             )
             
-            # Validate energy
+            # Validate turbulent stress
             validator.validate_parameter(
-                name="energy",
-                value=energy.mean(),
-                expected=0.5,
+                name="turbulent_stress",
+                value=turbulent_stress.mean(),
+                expected=0.1,
                 tolerance=1e-6
             )
             
         # Render results
         with monitor.measure_time("visualization"):
-            # Render pressure
-            renderer.render_surface(mesh, pressure, "Pressure")
-            renderer.save_plot("pressure.png")
+            # Render turbulent kinetic energy
+            renderer.render_volume(mesh, tke, "Turbulent Kinetic Energy")
+            renderer.save_plot("tke.png")
             
-            # Render vorticity
-            renderer.render_surface(mesh, vorticity[..., 0], "Vorticity")
-            renderer.save_plot("vorticity.png")
+            # Render dissipation rate
+            renderer.render_volume(mesh, dissipation, "Dissipation Rate")
+            renderer.save_plot("dissipation.png")
             
-            # Render strain rate
-            renderer.render_surface(mesh, strain_rate[..., 0, 0], "Strain Rate")
-            renderer.save_plot("strain_rate.png")
+            # Render eddy viscosity
+            renderer.render_volume(mesh, eddy_viscosity, "Eddy Viscosity")
+            renderer.save_plot("eddy_viscosity.png")
             
-            # Render energy
-            renderer.render_surface(mesh, energy, "Energy")
-            renderer.save_plot("energy.png")
+            # Render turbulent stress
+            renderer.render_volume(mesh, turbulent_stress[..., 0, 0], "Turbulent Stress XX")
+            renderer.save_plot("turbulent_stress_xx.png")
             
         # Generate summary
         with monitor.measure_time("summary_generation"):
             # Log summary
             logger.log_message("Simulation completed successfully")
-            logger.log_message(f"Best pressure: {pressure.min():.6f}")
-            logger.log_message(f"Best vorticity: {vorticity.min():.6f}")
-            logger.log_message(f"Best strain rate: {strain_rate.min():.6f}")
-            logger.log_message(f"Best energy: {energy.min():.6f}")
+            logger.log_message(f"Best TKE: {tke.max():.6f}")
+            logger.log_message(f"Best dissipation: {dissipation.max():.6f}")
+            logger.log_message(f"Best eddy viscosity: {eddy_viscosity.max():.6f}")
+            logger.log_message(f"Best turbulent stress: {turbulent_stress.max():.6f}")
             
             # Generate validation summary
             validation_summary = validator.generate_summary()
@@ -229,7 +235,7 @@ def main():
         handler.handle_error(
             str(e),
             severity="ERROR",
-            context={"simulation": "lid_driven_cavity"}
+            context={"simulation": "turbulent_flow"}
         )
         
         # Log error

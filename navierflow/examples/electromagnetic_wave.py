@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from navierflow.core.physics.fluid import FluidFlow
+from navierflow.core.physics.electromagnetic import ElectromagneticField
 from navierflow.core.numerics.solver import Solver
 from navierflow.core.mesh.generation import MeshGenerator
 from navierflow.visualization.renderer import Renderer, VisualizationConfig
@@ -13,7 +13,7 @@ from navierflow.configs.settings import ConfigManager, SimulationConfig
 def main():
     # Initialize logger
     logger = SimulationLogger(
-        log_file="lid_driven_cavity.log",
+        log_file="electromagnetic_wave.log",
         level="INFO",
         stream=True
     )
@@ -30,9 +30,9 @@ def main():
     # Initialize config manager
     config = SimulationConfig(
         physics={
-            "density": 1.0,
-            "viscosity": 0.1,
-            "gravity": (0.0, 0.0, 0.0)
+            "permittivity": 8.85e-12,
+            "permeability": 1.26e-6,
+            "conductivity": 1.0
         },
         numerical={
             "method": "explicit",
@@ -42,11 +42,11 @@ def main():
         },
         mesh={
             "type": "structured",
-            "dimension": 2,
-            "resolution": (100, 100)
+            "dimension": 3,
+            "resolution": (50, 50, 50)
         },
         boundary={
-            "type": "no_slip",
+            "type": "periodic",
             "value": 0.0
         },
         output={
@@ -79,7 +79,7 @@ def main():
     
     try:
         # Start simulation
-        logger.start_simulation("Lid-driven cavity flow simulation started")
+        logger.start_simulation("Electromagnetic wave simulation started")
         
         # Create output directory
         manager.create_output_dir()
@@ -88,21 +88,21 @@ def main():
         with monitor.measure_time("mesh_generation"):
             mesh = MeshGenerator(
                 mesh_type="structured",
-                dimension=2,
-                resolution=(100, 100)
+                dimension=3,
+                resolution=(50, 50, 50)
             )
             
             # Generate mesh
             mesh = mesh.generate_structured_mesh(
-                bounds=((0, 0), (1, 1)),
-                periodic=(False, False)
+                bounds=((0, 0, 0), (1, 1, 1)),
+                periodic=(True, True, True)
             )
             
-        # Initialize fluid flow
-        fluid = FluidFlow(
-            density=1.0,
-            viscosity=0.1,
-            gravity=(0.0, 0.0, 0.0)
+        # Initialize electromagnetic field
+        em = ElectromagneticField(
+            permittivity=8.85e-12,
+            permeability=1.26e-6,
+            conductivity=1.0
         )
         
         # Initialize solver
@@ -129,89 +129,86 @@ def main():
         ))
         
         # Initial condition
-        velocity = np.zeros((100, 100, 2))
-        velocity[-1, :, 0] = 1.0  # Lid velocity
+        charge_density = np.zeros((50, 50, 50))
+        charge_density[25, 25, 25] = 1.0
+        
+        current_density = np.zeros((50, 50, 50, 3))
+        current_density[..., 0] = 1.0
         
         # Solve
         with monitor.measure_time("solving"):
-            solution = solver.solve(velocity)
+            solution = solver.solve(charge_density)
             
-        # Compute pressure
-        with monitor.measure_time("pressure_computation"):
-            pressure = fluid.compute_pressure(solution)
+        # Compute electric field
+        with monitor.measure_time("electric_field_computation"):
+            electric_field = em.compute_electric_field(solution)
             
-        # Compute vorticity
-        with monitor.measure_time("vorticity_computation"):
-            vorticity = fluid.compute_vorticity(solution)
+        # Compute magnetic field
+        with monitor.measure_time("magnetic_field_computation"):
+            magnetic_field = em.compute_magnetic_field(current_density)
             
-        # Compute strain rate
-        with monitor.measure_time("strain_rate_computation"):
-            strain_rate = fluid.compute_strain_rate(solution)
+        # Compute Lorentz force
+        with monitor.measure_time("lorentz_force_computation"):
+            lorentz_force = em.compute_lorentz_force(
+                electric_field,
+                magnetic_field
+            )
             
-        # Compute energy
-        with monitor.measure_time("energy_computation"):
-            energy = fluid.compute_energy(solution)
+        # Compute boundary conditions
+        with monitor.measure_time("boundary_condition_computation"):
+            em.compute_boundary_conditions(
+                electric_field,
+                magnetic_field,
+                boundary_type="periodic"
+            )
             
         # Validate results
         with monitor.measure_time("validation"):
-            # Validate pressure
+            # Validate electric field
             validator.validate_parameter(
-                name="pressure",
-                value=pressure.mean(),
+                name="electric_field",
+                value=electric_field.mean(),
                 expected=0.0,
                 tolerance=1e-6
             )
             
-            # Validate vorticity
+            # Validate magnetic field
             validator.validate_parameter(
-                name="vorticity",
-                value=vorticity.mean(),
+                name="magnetic_field",
+                value=magnetic_field.mean(),
                 expected=0.0,
                 tolerance=1e-6
             )
             
-            # Validate strain rate
+            # Validate Lorentz force
             validator.validate_parameter(
-                name="strain_rate",
-                value=strain_rate.mean(),
+                name="lorentz_force",
+                value=lorentz_force.mean(),
                 expected=0.0,
-                tolerance=1e-6
-            )
-            
-            # Validate energy
-            validator.validate_parameter(
-                name="energy",
-                value=energy.mean(),
-                expected=0.5,
                 tolerance=1e-6
             )
             
         # Render results
         with monitor.measure_time("visualization"):
-            # Render pressure
-            renderer.render_surface(mesh, pressure, "Pressure")
-            renderer.save_plot("pressure.png")
+            # Render electric field
+            renderer.render_surface(mesh, electric_field[..., 0], "Electric Field X")
+            renderer.save_plot("electric_field_x.png")
             
-            # Render vorticity
-            renderer.render_surface(mesh, vorticity[..., 0], "Vorticity")
-            renderer.save_plot("vorticity.png")
+            # Render magnetic field
+            renderer.render_surface(mesh, magnetic_field[..., 0], "Magnetic Field X")
+            renderer.save_plot("magnetic_field_x.png")
             
-            # Render strain rate
-            renderer.render_surface(mesh, strain_rate[..., 0, 0], "Strain Rate")
-            renderer.save_plot("strain_rate.png")
-            
-            # Render energy
-            renderer.render_surface(mesh, energy, "Energy")
-            renderer.save_plot("energy.png")
+            # Render Lorentz force
+            renderer.render_surface(mesh, lorentz_force[..., 0], "Lorentz Force X")
+            renderer.save_plot("lorentz_force_x.png")
             
         # Generate summary
         with monitor.measure_time("summary_generation"):
             # Log summary
             logger.log_message("Simulation completed successfully")
-            logger.log_message(f"Best pressure: {pressure.min():.6f}")
-            logger.log_message(f"Best vorticity: {vorticity.min():.6f}")
-            logger.log_message(f"Best strain rate: {strain_rate.min():.6f}")
-            logger.log_message(f"Best energy: {energy.min():.6f}")
+            logger.log_message(f"Best electric field: {electric_field.min():.6f}")
+            logger.log_message(f"Best magnetic field: {magnetic_field.min():.6f}")
+            logger.log_message(f"Best lorentz force: {lorentz_force.min():.6f}")
             
             # Generate validation summary
             validation_summary = validator.generate_summary()
@@ -229,7 +226,7 @@ def main():
         handler.handle_error(
             str(e),
             severity="ERROR",
-            context={"simulation": "lid_driven_cavity"}
+            context={"simulation": "electromagnetic_wave"}
         )
         
         # Log error

@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from navierflow.core.physics.fluid import FluidFlow
+from navierflow.core.physics.non_newtonian import NonNewtonianFlow
 from navierflow.core.numerics.solver import Solver
 from navierflow.core.mesh.generation import MeshGenerator
 from navierflow.visualization.renderer import Renderer, VisualizationConfig
@@ -13,7 +13,7 @@ from navierflow.configs.settings import ConfigManager, SimulationConfig
 def main():
     # Initialize logger
     logger = SimulationLogger(
-        log_file="lid_driven_cavity.log",
+        log_file="shear_thinning.log",
         level="INFO",
         stream=True
     )
@@ -30,9 +30,9 @@ def main():
     # Initialize config manager
     config = SimulationConfig(
         physics={
-            "density": 1.0,
-            "viscosity": 0.1,
-            "gravity": (0.0, 0.0, 0.0)
+            "model_type": "power_law",
+            "k": 1.0,
+            "n": 0.5
         },
         numerical={
             "method": "explicit",
@@ -79,7 +79,7 @@ def main():
     
     try:
         # Start simulation
-        logger.start_simulation("Lid-driven cavity flow simulation started")
+        logger.start_simulation("Shear-thinning fluid simulation started")
         
         # Create output directory
         manager.create_output_dir()
@@ -98,11 +98,11 @@ def main():
                 periodic=(False, False)
             )
             
-        # Initialize fluid flow
-        fluid = FluidFlow(
-            density=1.0,
-            viscosity=0.1,
-            gravity=(0.0, 0.0, 0.0)
+        # Initialize non-Newtonian flow
+        non_newtonian = NonNewtonianFlow(
+            model_type="power_law",
+            k=1.0,
+            n=0.5
         )
         
         # Initialize solver
@@ -129,89 +129,92 @@ def main():
         ))
         
         # Initial condition
-        velocity = np.zeros((100, 100, 2))
-        velocity[-1, :, 0] = 1.0  # Lid velocity
+        strain_rate = np.zeros((100, 100, 2, 2))
+        strain_rate[..., 0, 1] = 1.0  # Simple shear
         
         # Solve
         with monitor.measure_time("solving"):
-            solution = solver.solve(velocity)
+            solution = solver.solve(strain_rate)
             
-        # Compute pressure
-        with monitor.measure_time("pressure_computation"):
-            pressure = fluid.compute_pressure(solution)
+        # Compute viscosity
+        with monitor.measure_time("viscosity_computation"):
+            viscosity = non_newtonian.compute_viscosity(solution)
             
-        # Compute vorticity
-        with monitor.measure_time("vorticity_computation"):
-            vorticity = fluid.compute_vorticity(solution)
+        # Compute stress
+        with monitor.measure_time("stress_computation"):
+            stress = non_newtonian.compute_stress(solution)
             
-        # Compute strain rate
-        with monitor.measure_time("strain_rate_computation"):
-            strain_rate = fluid.compute_strain_rate(solution)
+        # Compute yield criterion
+        with monitor.measure_time("yield_criterion_computation"):
+            yield_criterion = non_newtonian.compute_yield_criterion(stress)
             
-        # Compute energy
-        with monitor.measure_time("energy_computation"):
-            energy = fluid.compute_energy(solution)
+        # Compute power dissipation
+        with monitor.measure_time("power_dissipation_computation"):
+            power_dissipation = non_newtonian.compute_power_dissipation(
+                solution,
+                stress
+            )
             
         # Validate results
         with monitor.measure_time("validation"):
-            # Validate pressure
+            # Validate viscosity
             validator.validate_parameter(
-                name="pressure",
-                value=pressure.mean(),
+                name="viscosity",
+                value=viscosity.mean(),
+                expected=1.0,
+                tolerance=1e-6
+            )
+            
+            # Validate stress
+            validator.validate_parameter(
+                name="stress",
+                value=stress.mean(),
+                expected=1.0,
+                tolerance=1e-6
+            )
+            
+            # Validate yield criterion
+            validator.validate_parameter(
+                name="yield_criterion",
+                value=yield_criterion.mean(),
                 expected=0.0,
                 tolerance=1e-6
             )
             
-            # Validate vorticity
+            # Validate power dissipation
             validator.validate_parameter(
-                name="vorticity",
-                value=vorticity.mean(),
-                expected=0.0,
-                tolerance=1e-6
-            )
-            
-            # Validate strain rate
-            validator.validate_parameter(
-                name="strain_rate",
-                value=strain_rate.mean(),
-                expected=0.0,
-                tolerance=1e-6
-            )
-            
-            # Validate energy
-            validator.validate_parameter(
-                name="energy",
-                value=energy.mean(),
-                expected=0.5,
+                name="power_dissipation",
+                value=power_dissipation.mean(),
+                expected=1.0,
                 tolerance=1e-6
             )
             
         # Render results
         with monitor.measure_time("visualization"):
-            # Render pressure
-            renderer.render_surface(mesh, pressure, "Pressure")
-            renderer.save_plot("pressure.png")
+            # Render viscosity
+            renderer.render_surface(mesh, viscosity, "Viscosity")
+            renderer.save_plot("viscosity.png")
             
-            # Render vorticity
-            renderer.render_surface(mesh, vorticity[..., 0], "Vorticity")
-            renderer.save_plot("vorticity.png")
+            # Render stress
+            renderer.render_surface(mesh, stress[..., 0, 0], "Stress XX")
+            renderer.save_plot("stress_xx.png")
             
-            # Render strain rate
-            renderer.render_surface(mesh, strain_rate[..., 0, 0], "Strain Rate")
-            renderer.save_plot("strain_rate.png")
+            # Render yield criterion
+            renderer.render_surface(mesh, yield_criterion, "Yield Criterion")
+            renderer.save_plot("yield_criterion.png")
             
-            # Render energy
-            renderer.render_surface(mesh, energy, "Energy")
-            renderer.save_plot("energy.png")
+            # Render power dissipation
+            renderer.render_surface(mesh, power_dissipation, "Power Dissipation")
+            renderer.save_plot("power_dissipation.png")
             
         # Generate summary
         with monitor.measure_time("summary_generation"):
             # Log summary
             logger.log_message("Simulation completed successfully")
-            logger.log_message(f"Best pressure: {pressure.min():.6f}")
-            logger.log_message(f"Best vorticity: {vorticity.min():.6f}")
-            logger.log_message(f"Best strain rate: {strain_rate.min():.6f}")
-            logger.log_message(f"Best energy: {energy.min():.6f}")
+            logger.log_message(f"Best viscosity: {viscosity.min():.6f}")
+            logger.log_message(f"Best stress: {stress.min():.6f}")
+            logger.log_message(f"Best yield criterion: {yield_criterion.min():.6f}")
+            logger.log_message(f"Best power dissipation: {power_dissipation.min():.6f}")
             
             # Generate validation summary
             validation_summary = validator.generate_summary()
@@ -229,7 +232,7 @@ def main():
         handler.handle_error(
             str(e),
             severity="ERROR",
-            context={"simulation": "lid_driven_cavity"}
+            context={"simulation": "shear_thinning"}
         )
         
         # Log error

@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from navierflow.core.physics.fluid import FluidFlow
+from navierflow.core.physics.multiphase import MultiphaseFlow
 from navierflow.core.numerics.solver import Solver
 from navierflow.core.mesh.generation import MeshGenerator
 from navierflow.visualization.renderer import Renderer, VisualizationConfig
@@ -13,7 +13,7 @@ from navierflow.configs.settings import ConfigManager, SimulationConfig
 def main():
     # Initialize logger
     logger = SimulationLogger(
-        log_file="lid_driven_cavity.log",
+        log_file="rising_bubble.log",
         level="INFO",
         stream=True
     )
@@ -30,9 +30,10 @@ def main():
     # Initialize config manager
     config = SimulationConfig(
         physics={
-            "density": 1.0,
-            "viscosity": 0.1,
-            "gravity": (0.0, 0.0, 0.0)
+            "phases": ["water", "air"],
+            "densities": [1000.0, 1.0],
+            "viscosities": [0.001, 0.00001],
+            "surface_tension": 0.072
         },
         numerical={
             "method": "explicit",
@@ -43,7 +44,7 @@ def main():
         mesh={
             "type": "structured",
             "dimension": 2,
-            "resolution": (100, 100)
+            "resolution": (100, 200)
         },
         boundary={
             "type": "no_slip",
@@ -79,7 +80,7 @@ def main():
     
     try:
         # Start simulation
-        logger.start_simulation("Lid-driven cavity flow simulation started")
+        logger.start_simulation("Rising bubble simulation started")
         
         # Create output directory
         manager.create_output_dir()
@@ -89,20 +90,21 @@ def main():
             mesh = MeshGenerator(
                 mesh_type="structured",
                 dimension=2,
-                resolution=(100, 100)
+                resolution=(100, 200)
             )
             
             # Generate mesh
             mesh = mesh.generate_structured_mesh(
-                bounds=((0, 0), (1, 1)),
+                bounds=((0, 0), (1, 2)),
                 periodic=(False, False)
             )
             
-        # Initialize fluid flow
-        fluid = FluidFlow(
-            density=1.0,
-            viscosity=0.1,
-            gravity=(0.0, 0.0, 0.0)
+        # Initialize multiphase flow
+        multiphase = MultiphaseFlow(
+            phases=["water", "air"],
+            densities=[1000.0, 1.0],
+            viscosities=[0.001, 0.00001],
+            surface_tension=0.072
         )
         
         # Initialize solver
@@ -129,89 +131,93 @@ def main():
         ))
         
         # Initial condition
-        velocity = np.zeros((100, 100, 2))
-        velocity[-1, :, 0] = 1.0  # Lid velocity
+        level_set = np.zeros((100, 200))
+        x, y = np.meshgrid(
+            np.linspace(0, 1, 100),
+            np.linspace(0, 2, 200)
+        )
+        level_set = np.sqrt((x - 0.5)**2 + (y - 0.5)**2) - 0.2
         
         # Solve
         with monitor.measure_time("solving"):
-            solution = solver.solve(velocity)
+            solution = solver.solve(level_set)
             
-        # Compute pressure
-        with monitor.measure_time("pressure_computation"):
-            pressure = fluid.compute_pressure(solution)
+        # Compute volume fraction
+        with monitor.measure_time("volume_fraction_computation"):
+            volume_fraction = multiphase.compute_volume_fraction(solution)
             
-        # Compute vorticity
-        with monitor.measure_time("vorticity_computation"):
-            vorticity = fluid.compute_vorticity(solution)
+        # Compute interface normal
+        with monitor.measure_time("interface_normal_computation"):
+            normal = multiphase.compute_interface_normal(solution)
             
-        # Compute strain rate
-        with monitor.measure_time("strain_rate_computation"):
-            strain_rate = fluid.compute_strain_rate(solution)
+        # Compute curvature
+        with monitor.measure_time("curvature_computation"):
+            curvature = multiphase.compute_curvature(solution)
             
-        # Compute energy
-        with monitor.measure_time("energy_computation"):
-            energy = fluid.compute_energy(solution)
+        # Compute surface tension
+        with monitor.measure_time("surface_tension_computation"):
+            surface_tension = multiphase.compute_surface_tension(solution)
             
         # Validate results
         with monitor.measure_time("validation"):
-            # Validate pressure
+            # Validate volume fraction
             validator.validate_parameter(
-                name="pressure",
-                value=pressure.mean(),
-                expected=0.0,
-                tolerance=1e-6
-            )
-            
-            # Validate vorticity
-            validator.validate_parameter(
-                name="vorticity",
-                value=vorticity.mean(),
-                expected=0.0,
-                tolerance=1e-6
-            )
-            
-            # Validate strain rate
-            validator.validate_parameter(
-                name="strain_rate",
-                value=strain_rate.mean(),
-                expected=0.0,
-                tolerance=1e-6
-            )
-            
-            # Validate energy
-            validator.validate_parameter(
-                name="energy",
-                value=energy.mean(),
+                name="volume_fraction",
+                value=volume_fraction.mean(),
                 expected=0.5,
+                tolerance=1e-6
+            )
+            
+            # Validate interface normal
+            validator.validate_parameter(
+                name="interface_normal",
+                value=normal.mean(),
+                expected=0.0,
+                tolerance=1e-6
+            )
+            
+            # Validate curvature
+            validator.validate_parameter(
+                name="curvature",
+                value=curvature.mean(),
+                expected=5.0,
+                tolerance=1e-6
+            )
+            
+            # Validate surface tension
+            validator.validate_parameter(
+                name="surface_tension",
+                value=surface_tension.mean(),
+                expected=0.072,
                 tolerance=1e-6
             )
             
         # Render results
         with monitor.measure_time("visualization"):
-            # Render pressure
-            renderer.render_surface(mesh, pressure, "Pressure")
-            renderer.save_plot("pressure.png")
+            # Render volume fraction
+            renderer.render_surface(mesh, volume_fraction, "Volume Fraction")
+            renderer.save_plot("volume_fraction.png")
             
-            # Render vorticity
-            renderer.render_surface(mesh, vorticity[..., 0], "Vorticity")
-            renderer.save_plot("vorticity.png")
+            # Render interface normal
+            renderer.render_surface(mesh, normal[..., 0], "Interface Normal X")
+            renderer.save_plot("interface_normal_x.png")
             
-            # Render strain rate
-            renderer.render_surface(mesh, strain_rate[..., 0, 0], "Strain Rate")
-            renderer.save_plot("strain_rate.png")
+            # Render curvature
+            renderer.render_surface(mesh, curvature, "Curvature")
+            renderer.save_plot("curvature.png")
             
-            # Render energy
-            renderer.render_surface(mesh, energy, "Energy")
-            renderer.save_plot("energy.png")
+            # Render surface tension
+            renderer.render_surface(mesh, surface_tension[..., 0], "Surface Tension X")
+            renderer.save_plot("surface_tension_x.png")
             
         # Generate summary
         with monitor.measure_time("summary_generation"):
             # Log summary
             logger.log_message("Simulation completed successfully")
-            logger.log_message(f"Best pressure: {pressure.min():.6f}")
-            logger.log_message(f"Best vorticity: {vorticity.min():.6f}")
-            logger.log_message(f"Best strain rate: {strain_rate.min():.6f}")
-            logger.log_message(f"Best energy: {energy.min():.6f}")
+            logger.log_message(f"Best volume fraction: {volume_fraction.min():.6f}")
+            logger.log_message(f"Best interface normal: {normal.min():.6f}")
+            logger.log_message(f"Best curvature: {curvature.min():.6f}")
+            logger.log_message(f"Best surface tension: {surface_tension.min():.6f}")
             
             # Generate validation summary
             validation_summary = validator.generate_summary()
@@ -229,7 +235,7 @@ def main():
         handler.handle_error(
             str(e),
             severity="ERROR",
-            context={"simulation": "lid_driven_cavity"}
+            context={"simulation": "rising_bubble"}
         )
         
         # Log error

@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from navierflow.core.physics.fluid import FluidFlow
+from navierflow.core.physics.compressible import CompressibleFlow
 from navierflow.core.numerics.solver import Solver
 from navierflow.core.mesh.generation import MeshGenerator
 from navierflow.visualization.renderer import Renderer, VisualizationConfig
@@ -13,7 +13,7 @@ from navierflow.configs.settings import ConfigManager, SimulationConfig
 def main():
     # Initialize logger
     logger = SimulationLogger(
-        log_file="lid_driven_cavity.log",
+        log_file="compressible_flow.log",
         level="INFO",
         stream=True
     )
@@ -30,9 +30,9 @@ def main():
     # Initialize config manager
     config = SimulationConfig(
         physics={
-            "density": 1.0,
-            "viscosity": 0.1,
-            "gravity": (0.0, 0.0, 0.0)
+            "model_type": "euler",
+            "mach_number": 0.8,
+            "gamma": 1.4
         },
         numerical={
             "method": "explicit",
@@ -46,8 +46,8 @@ def main():
             "resolution": (100, 100)
         },
         boundary={
-            "type": "no_slip",
-            "value": 0.0
+            "type": "supersonic",
+            "value": 1.0
         },
         output={
             "path": "output",
@@ -79,7 +79,7 @@ def main():
     
     try:
         # Start simulation
-        logger.start_simulation("Lid-driven cavity flow simulation started")
+        logger.start_simulation("Compressible flow simulation started")
         
         # Create output directory
         manager.create_output_dir()
@@ -98,11 +98,11 @@ def main():
                 periodic=(False, False)
             )
             
-        # Initialize fluid flow
-        fluid = FluidFlow(
-            density=1.0,
-            viscosity=0.1,
-            gravity=(0.0, 0.0, 0.0)
+        # Initialize compressible flow
+        compressible = CompressibleFlow(
+            model_type="euler",
+            mach_number=0.8,
+            gamma=1.4
         )
         
         # Initialize solver
@@ -129,89 +129,118 @@ def main():
         ))
         
         # Initial condition
+        density = np.ones((100, 100))
         velocity = np.zeros((100, 100, 2))
-        velocity[-1, :, 0] = 1.0  # Lid velocity
+        velocity[..., 0] = 1.0  # Uniform flow in x-direction
+        pressure = np.ones((100, 100))
         
         # Solve
         with monitor.measure_time("solving"):
-            solution = solver.solve(velocity)
+            solution = solver.solve(
+                density,
+                velocity,
+                pressure
+            )
+            
+        # Compute density
+        with monitor.measure_time("density_computation"):
+            density = compressible.compute_density(solution)
+            
+        # Compute velocity
+        with monitor.measure_time("velocity_computation"):
+            velocity = compressible.compute_velocity(solution)
             
         # Compute pressure
         with monitor.measure_time("pressure_computation"):
-            pressure = fluid.compute_pressure(solution)
+            pressure = compressible.compute_pressure(solution)
             
-        # Compute vorticity
-        with monitor.measure_time("vorticity_computation"):
-            vorticity = fluid.compute_vorticity(solution)
+        # Compute temperature
+        with monitor.measure_time("temperature_computation"):
+            temperature = compressible.compute_temperature(
+                density,
+                pressure
+            )
             
-        # Compute strain rate
-        with monitor.measure_time("strain_rate_computation"):
-            strain_rate = fluid.compute_strain_rate(solution)
-            
-        # Compute energy
-        with monitor.measure_time("energy_computation"):
-            energy = fluid.compute_energy(solution)
+        # Compute mach number
+        with monitor.measure_time("mach_number_computation"):
+            mach_number = compressible.compute_mach_number(
+                velocity,
+                temperature
+            )
             
         # Validate results
         with monitor.measure_time("validation"):
+            # Validate density
+            validator.validate_parameter(
+                name="density",
+                value=density.mean(),
+                expected=1.0,
+                tolerance=1e-6
+            )
+            
+            # Validate velocity
+            validator.validate_parameter(
+                name="velocity",
+                value=velocity.mean(),
+                expected=1.0,
+                tolerance=1e-6
+            )
+            
             # Validate pressure
             validator.validate_parameter(
                 name="pressure",
                 value=pressure.mean(),
-                expected=0.0,
+                expected=1.0,
                 tolerance=1e-6
             )
             
-            # Validate vorticity
+            # Validate temperature
             validator.validate_parameter(
-                name="vorticity",
-                value=vorticity.mean(),
-                expected=0.0,
+                name="temperature",
+                value=temperature.mean(),
+                expected=1.0,
                 tolerance=1e-6
             )
             
-            # Validate strain rate
+            # Validate mach number
             validator.validate_parameter(
-                name="strain_rate",
-                value=strain_rate.mean(),
-                expected=0.0,
-                tolerance=1e-6
-            )
-            
-            # Validate energy
-            validator.validate_parameter(
-                name="energy",
-                value=energy.mean(),
-                expected=0.5,
+                name="mach_number",
+                value=mach_number.mean(),
+                expected=0.8,
                 tolerance=1e-6
             )
             
         # Render results
         with monitor.measure_time("visualization"):
+            # Render density
+            renderer.render_surface(mesh, density, "Density")
+            renderer.save_plot("density.png")
+            
+            # Render velocity
+            renderer.render_surface(mesh, velocity[..., 0], "Velocity X")
+            renderer.save_plot("velocity_x.png")
+            
             # Render pressure
             renderer.render_surface(mesh, pressure, "Pressure")
             renderer.save_plot("pressure.png")
             
-            # Render vorticity
-            renderer.render_surface(mesh, vorticity[..., 0], "Vorticity")
-            renderer.save_plot("vorticity.png")
+            # Render temperature
+            renderer.render_surface(mesh, temperature, "Temperature")
+            renderer.save_plot("temperature.png")
             
-            # Render strain rate
-            renderer.render_surface(mesh, strain_rate[..., 0, 0], "Strain Rate")
-            renderer.save_plot("strain_rate.png")
-            
-            # Render energy
-            renderer.render_surface(mesh, energy, "Energy")
-            renderer.save_plot("energy.png")
+            # Render mach number
+            renderer.render_surface(mesh, mach_number, "Mach Number")
+            renderer.save_plot("mach_number.png")
             
         # Generate summary
         with monitor.measure_time("summary_generation"):
             # Log summary
             logger.log_message("Simulation completed successfully")
-            logger.log_message(f"Best pressure: {pressure.min():.6f}")
-            logger.log_message(f"Best vorticity: {vorticity.min():.6f}")
-            logger.log_message(f"Best strain rate: {strain_rate.min():.6f}")
-            logger.log_message(f"Best energy: {energy.min():.6f}")
+            logger.log_message(f"Best density: {density.max():.6f}")
+            logger.log_message(f"Best velocity: {velocity.max():.6f}")
+            logger.log_message(f"Best pressure: {pressure.max():.6f}")
+            logger.log_message(f"Best temperature: {temperature.max():.6f}")
+            logger.log_message(f"Best mach number: {mach_number.max():.6f}")
             
             # Generate validation summary
             validation_summary = validator.generate_summary()
@@ -229,7 +258,7 @@ def main():
         handler.handle_error(
             str(e),
             severity="ERROR",
-            context={"simulation": "lid_driven_cavity"}
+            context={"simulation": "compressible_flow"}
         )
         
         # Log error
