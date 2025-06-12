@@ -17,7 +17,7 @@ NavierFlow is a high-performance fluid dynamics simulation engine that supports 
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/navierflow.git
+git clone https://github.com/tafolabi009/navierflow.git
 cd navierflow
 ```
 
@@ -180,7 +180,7 @@ This is proprietary software. Unauthorized copying, modification, distribution, 
 
 ## Technical Support
 - Premium support available 24/7
-- Email: support@yourcompany.com
+- Email: support@genovotech.com
 - Phone: +1-XXX-XXX-XXXX
 - Documentation: https://docs.navierflow.com
 
@@ -227,7 +227,7 @@ NavierFlow™ is a trademark of Genovo Technologies.
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/navierflow.git
+git clone https://github.com/tafolabi009/navierflow.git
 cd navierflow
 ```
 
@@ -295,17 +295,10 @@ This project follows PEP 8 guidelines. Use `black` for formatting:
 black .
 ```
 
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+
 
 ## Acknowledgments
 
@@ -318,10 +311,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 If you use this software in your research, please cite:
 
 ```bibtex
-@software{navierflow2024,
+@software{navierflow2025,
   title = {NavierFlow: AI-Enhanced Fluid Dynamics Simulation},
-  author = {NavierFlow Contributors},
-  year = {2024},
-  url = {https://github.com/yourusername/navierflow}
+  author = {Genovo Development Team},
+  year = {2025},
+  url = {https://github.com/tafolabi009/navierflow}
 }
 ```
